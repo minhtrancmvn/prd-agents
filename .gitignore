@@ -1,0 +1,9 @@
+# Ignore every Claude Code runtime and configuration file by default.
+/*
+
+# Version only global PRD agent source files and their shared standards.
+!/.gitignore
+!/agents/
+/agents/*
+!/agents/prd-*.md
+!/prd-shared-authoring-standards.md
