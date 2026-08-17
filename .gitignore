@@ -7,3 +7,4 @@
 /agents/*
 !/agents/prd-*.md
 !/prd-shared-authoring-standards.md
+!/README.md
