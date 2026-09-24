@@ -132,6 +132,22 @@ REPAIR_DIRECTORY_PATTERN = re.compile(r"06-repair-attempt-([1-9]\d*)")
 CONSOLIDATION_DIRECTORY = "06-consolidation-attempt-1"
 REPAIR_SKIPPED_DIRECTORY = "06-repair-skipped"
 
+BASE_PHASE_READY_STATUSES = {
+    "00-load": frozenset({"SUCCESS"}),
+    "01-plan": frozenset({"SUCCESS"}),
+    "02-context": frozenset({"SUCCESS"}),
+    "03-figma": frozenset({"SUCCESS", "SUCCESS_WITH_WARNINGS", "SKIPPED"}),
+    "04-author": frozenset({"SUCCESS"}),
+}
+
+CONTENT_BODY_DIRECTORY_PATTERNS = (
+    re.compile(r"04-author"),
+    QA_DIRECTORY_PATTERN,
+    REPAIR_DIRECTORY_PATTERN,
+    re.compile(r"06-consolidation-attempt-1"),
+    re.compile(r"07-summary"),
+)
+
 HANDOFF_FIELDS = (
     ("STATUS", "status"),
     ("AGENT", "agent"),
@@ -237,7 +253,12 @@ def _format_handoff_value(value: Any) -> str:
 def _validate_handoff(content_path: Path, manifest: dict[str, Any], errors: list[ValidationError]) -> str:
     if not content_path.is_file():
         return ""
-    content_lines = content_path.read_text(encoding="utf-8").splitlines()
+    try:
+        content_text = content_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        errors.append(_error(content_path, "invalid_content", f"content.md must be readable UTF-8: {exc}"))
+        return ""
+    content_lines = content_text.splitlines()
     handoff_lines = content_lines[:len(HANDOFF_FIELDS)]
     if len(handoff_lines) < len(HANDOFF_FIELDS):
         errors.append(_error(content_path, "missing_handoff_field", "handoff envelope must contain all required fields"))
@@ -264,6 +285,7 @@ def _validate_artifacts(phase_dir: Path, manifest: dict[str, Any], errors: list[
     content_entries = [artifact for artifact in artifacts if isinstance(artifact, dict) and artifact.get("path") == "content.md"]
     if len(content_entries) != 1:
         errors.append(_error(phase_dir / "manifest.json", "invalid_content_artifact", "artifacts must contain exactly one content.md entry"))
+    resolved_phase_dir = phase_dir.resolve()
     for artifact in artifacts:
         if not isinstance(artifact, dict) or not isinstance(artifact.get("path"), str):
             errors.append(_error(phase_dir / "manifest.json", "invalid_artifact", "each artifact needs a relative path"))
@@ -273,12 +295,36 @@ def _validate_artifacts(phase_dir: Path, manifest: dict[str, Any], errors: list[
             errors.append(_error(phase_dir / "manifest.json", "invalid_artifact_path", "artifact path must stay inside phase directory"))
             continue
         artifact_path = phase_dir / relative_path
+        if not _is_within(artifact_path.resolve(), resolved_phase_dir):
+            errors.append(_error(phase_dir / "manifest.json", "invalid_artifact_path", "artifact path must stay inside phase directory after resolving symlinks"))
+            continue
         if not artifact_path.is_file():
             errors.append(_error(artifact_path, "missing_artifact", "manifest artifact does not exist"))
 
 
 def _is_nonnegative_int(value: Any) -> bool:
     return type(value) is int and value >= 0
+
+
+def _allowed_base_statuses(directory: str) -> frozenset[str]:
+    """Return statuses a completed base phase may record on a QA-reaching run."""
+    return BASE_PHASE_READY_STATUSES.get(directory, frozenset({"SUCCESS"}))
+
+
+def _base_phase_is_ready(directory: str, manifest: dict[str, Any] | None) -> bool:
+    """Return whether a base phase is a successful non-terminal result with no error."""
+    if manifest is None:
+        return False
+    return (
+        manifest.get("status") in _allowed_base_statuses(directory)
+        and manifest.get("terminal") is False
+        and manifest.get("error_code") == "NONE"
+    )
+
+
+def _requires_content_body(directory: str) -> bool:
+    """Return whether a phase content file must carry a body beyond the handoff envelope."""
+    return any(pattern.fullmatch(directory) for pattern in CONTENT_BODY_DIRECTORY_PATTERNS)
 
 
 def _validate_manifest(
@@ -459,31 +505,26 @@ def _validate_base_phase_topology(
 
     reached_qa = any(name.startswith("05-qa-attempt-") for name in names)
     if reached_qa:
-        if summary.get("status") == "SUCCESS":
-            if len(present_indices) != len(BASE_PHASES):
-                errors.append(_error(run_dir / SUMMARY_DIRECTORY / "manifest.json", "invalid_success_terminal_topology", "successful summary requires all base phases and QA"))
-            return True
-        if summary.get("status") not in {"BLOCKED", "FAILED"}:
-            return True
         if len(present_indices) != len(BASE_PHASES):
-            errors.append(_error(run_dir, "invalid_phase_topology", "QA requires all base phases"))
+            if summary.get("status") == "SUCCESS":
+                errors.append(_error(run_dir / SUMMARY_DIRECTORY / "manifest.json", "invalid_success_terminal_topology", "successful summary requires all base phases and QA"))
+            else:
+                errors.append(_error(run_dir, "invalid_phase_topology", "QA requires all base phases"))
+        if not all(_base_phase_is_ready(directory, manifests.get(directory)) for directory, _ in BASE_PHASES):
+            errors.append(_error(run_dir, "invalid_terminal_topology", "pre-QA base phases must be successful non-terminal results"))
         return True
 
     terminal_index = present_indices[-1]
     terminal_directory, terminal_phase = BASE_PHASES[terminal_index]
-    terminal_manifest = manifests[terminal_directory]
+    terminal_manifest = manifests.get(terminal_directory)
+    if terminal_manifest is None:
+        return False
     allowed_directories = {directory for directory, _ in BASE_PHASES[:terminal_index + 1]} | {SUMMARY_DIRECTORY}
     unexpected_directories = names - allowed_directories
     if unexpected_directories:
         errors.append(_error(run_dir, "invalid_phase_topology", "early terminal run contains unapproved phase directories"))
 
-    preceding_manifests = (manifests[directory] for directory, _ in BASE_PHASES[:terminal_index])
-    if any(
-        manifest.get("status") != "SUCCESS"
-        or manifest.get("terminal") is not False
-        or manifest.get("error_code") != "NONE"
-        for manifest in preceding_manifests
-    ):
+    if not all(_base_phase_is_ready(directory, manifests.get(directory)) for directory, _ in BASE_PHASES[:terminal_index]):
         errors.append(_error(run_dir, "invalid_terminal_topology", "early terminal preceding base phases must be successful non-terminal results"))
 
     expected_status, allowed_errors = EARLY_TERMINAL_RULES[terminal_phase]
@@ -560,9 +601,16 @@ def _validate_qa_repair_sequence(
             continue
         if repair_manifest.get("retry_count") != repair_number:
             errors.append(_error(run_dir / f"06-repair-attempt-{repair_number}" / "manifest.json", "invalid_retry_count", "repair retry_count must equal repair attempt number"))
-    if not repair_numbers and expected_repairs == 0 and not has_skipped and not has_consolidation:
-        errors.append(_error(run_dir, "invalid_phase_topology", "clean QA requires repair-skipped or consolidation artifact"))
     summary = manifests.get("07-summary")
+    final_qa = manifests[f"05-qa-attempt-{qa_numbers[-1]}"]
+    clean_final_qa = (
+        final_qa.get("status") == "SUCCESS"
+        and final_qa.get("terminal") is False
+        and final_qa.get("qa_verdict") == "CHECKLIST_PASSED"
+        and final_qa.get("error_code") == "NONE"
+    )
+    if clean_final_qa and not repair_numbers and not has_skipped and not has_consolidation:
+        errors.append(_error(run_dir, "invalid_phase_topology", "clean QA requires repair-skipped or consolidation artifact"))
     for index, qa_number in enumerate(qa_numbers, start=1):
         qa_manifest = manifests[f"05-qa-attempt-{qa_number}"]
         verdict = qa_manifest.get("qa_verdict")
@@ -574,14 +622,36 @@ def _validate_qa_repair_sequence(
         expected_retry_count = index - 1 if index < len(qa_numbers) and not is_consolidation_pass else len(repair_numbers)
         if qa_manifest.get("retry_count") != expected_retry_count:
             errors.append(_error(run_dir / f"05-qa-attempt-{qa_number}" / "manifest.json", "invalid_retry_count", "QA retry_count must retain consumed repairs"))
-    final_qa = manifests[f"05-qa-attempt-{qa_numbers[-1]}"]
-    if summary and (
-        final_qa.get("status") == "SUCCESS"
-        and final_qa.get("terminal") is False
-        and final_qa.get("qa_verdict") == "CHECKLIST_PASSED"
-        and final_qa.get("error_code") == "NONE"
-        and summary.get("status") != "SUCCESS"
-    ):
+    if summary is not None and summary.get("status") == "SUCCESS":
+        if not (
+            clean_final_qa
+            and summary.get("qa_verdict") == "CHECKLIST_PASSED"
+            and summary.get("terminal") is True
+            and summary.get("error_code") == "NONE"
+            and summary.get("next_agent") == "STOP"
+        ):
+            errors.append(
+                _error(
+                    run_dir / "07-summary" / "manifest.json",
+                    "invalid_success_terminal_topology",
+                    "successful summary requires passing non-terminal final QA and a terminal STOP summary",
+                )
+            )
+    elif summary is not None and summary.get("error_code") == "VALIDATION_FAILED":
+        if not (
+            clean_final_qa
+            and summary.get("status") == "FAILED"
+            and summary.get("terminal") is True
+            and summary.get("next_agent") == "STOP"
+        ):
+            errors.append(
+                _error(
+                    run_dir / "07-summary" / "manifest.json",
+                    "invalid_failed_terminal_topology",
+                    "report validation failure requires passing non-terminal final QA and a terminal STOP summary",
+                )
+            )
+    elif summary is not None and clean_final_qa:
         errors.append(
             _error(
                 run_dir / "07-summary" / "manifest.json",
@@ -589,42 +659,34 @@ def _validate_qa_repair_sequence(
                 "clean QA topology requires a SUCCESS summary status",
             )
         )
-    if summary and summary.get("status") == "SUCCESS":
-        if not (
-            final_qa.get("status") == "SUCCESS"
-            and final_qa.get("terminal") is False
-            and final_qa.get("qa_verdict") == "CHECKLIST_PASSED"
-            and final_qa.get("error_code") == "NONE"
-            and summary.get("qa_verdict") == "CHECKLIST_PASSED"
-        ):
-            errors.append(_error(run_dir / "07-summary" / "manifest.json", "invalid_success_terminal_topology", "successful summary requires passing non-terminal final QA"))
-    elif summary and summary.get("error_code") == "QA_RETRY_EXHAUSTED":
-        retry_limit = final_qa.get("retry_limit")
-        consumed_retries = len(repair_numbers)
-        if not (
-            final_qa.get("qa_verdict") == "CHECKLIST_FAILED"
-            and _is_nonnegative_int(retry_limit)
-            and consumed_retries == retry_limit
-            and len(qa_numbers) == retry_limit + 1
-            and final_qa.get("retry_count") == consumed_retries
-            and summary.get("retry_count") == final_qa.get("retry_count")
-        ):
-            errors.append(
-                _error(
-                    run_dir / "07-summary" / "manifest.json",
-                    "invalid_failed_terminal_topology",
-                    "retry exhaustion requires every retry to have a repair and QA recheck with matching final counts",
+    if summary is not None and summary.get("status") != "SUCCESS":
+        if summary.get("error_code") == "QA_RETRY_EXHAUSTED":
+            retry_limit = final_qa.get("retry_limit")
+            consumed_retries = len(repair_numbers)
+            if not (
+                final_qa.get("qa_verdict") == "CHECKLIST_FAILED"
+                and _is_nonnegative_int(retry_limit)
+                and consumed_retries == retry_limit
+                and len(qa_numbers) == retry_limit + 1
+                and final_qa.get("retry_count") == consumed_retries
+                and summary.get("retry_count") == final_qa.get("retry_count")
+            ):
+                errors.append(
+                    _error(
+                        run_dir / "07-summary" / "manifest.json",
+                        "invalid_failed_terminal_topology",
+                        "retry exhaustion requires every retry to have a repair and QA recheck with matching final counts",
+                    )
                 )
-            )
-    elif summary and summary.get("error_code") == "CONSOLIDATION_REGRESSION":
-        penultimate_qa = manifests.get(f"05-qa-attempt-{qa_numbers[-2]}") if len(qa_numbers) > 1 else None
-        if not (
-            has_consolidation
-            and penultimate_qa is not None
-            and penultimate_qa.get("qa_verdict") == "CHECKLIST_PASSED"
-            and final_qa.get("qa_verdict") == "CHECKLIST_FAILED"
-        ):
-            errors.append(_error(run_dir / "07-summary" / "manifest.json", "invalid_failed_terminal_topology", "consolidation regression requires pass, consolidation, then failed QA"))
+        elif summary.get("error_code") == "CONSOLIDATION_REGRESSION":
+            penultimate_qa = manifests.get(f"05-qa-attempt-{qa_numbers[-2]}") if len(qa_numbers) > 1 else None
+            if not (
+                has_consolidation
+                and penultimate_qa is not None
+                and penultimate_qa.get("qa_verdict") == "CHECKLIST_PASSED"
+                and final_qa.get("qa_verdict") == "CHECKLIST_FAILED"
+            ):
+                errors.append(_error(run_dir / "07-summary" / "manifest.json", "invalid_failed_terminal_topology", "consolidation regression requires pass, consolidation, then failed QA"))
     if has_consolidation:
         consolidation = manifests[CONSOLIDATION_DIRECTORY]
         if consolidation.get("consolidation_attempts") != 1:
@@ -683,6 +745,8 @@ def validate_run(run_dir: Path, repository_root: Path | None = None) -> list[Val
         _validate_manifest(phase_dir, manifest, resolved_run_dir, errors)
         _validate_artifacts(phase_dir, manifest, errors)
         body = _validate_handoff(content_path, manifest, errors)
+        if content_path.is_file() and not body and _requires_content_body(phase_dir.name):
+            errors.append(_error(content_path, "missing_content_body", "phase content requires a non-empty body beyond the handoff envelope"))
         if phase_dir.name == "03-figma" and manifest.get("status") == "SKIPPED" and not body:
             errors.append(_error(content_path, "missing_skipped_figma_reason", "skipped Figma content requires a non-empty reason"))
         if phase_dir.name == "06-repair-skipped" and manifest.get("status") == "SKIPPED" and not body:

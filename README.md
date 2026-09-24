@@ -51,9 +51,10 @@ Subagent files use Markdown with YAML frontmatter. Each definition declares expl
 ## Prerequisites
 
 - [Claude Code](https://code.claude.com/docs/en/overview) with custom skills and subagent support.
+- Python 3.10 or newer to run the pipeline validator and its tests (standard library only).
 - Target workspace containing exactly one discoverable `roles-permissions.md`, or explicit roles-file path in request.
 - Product context sufficient to identify scope, roles, source documents, and target requirements path.
-- Optional: configured `figma-console` MCP server and Figma access when request contains Figma URLs. See [Connect Claude Code to tools via MCP](https://code.claude.com/docs/en/mcp).
+- Optional: configured `figma-console-mcp` MCP server and Figma access when request contains Figma URLs. The server name must match the `mcp__figma-console-mcp__` tool allowlist prefix in `agents/prd-figma-reader.md`. See [Connect Claude Code to tools via MCP](https://code.claude.com/docs/en/mcp).
 
 No package manager, application runtime, or build system is required.
 
@@ -79,16 +80,20 @@ Inspect or back up `~/.claude/skills/prd-pipeline` before running `rm -rf`. It r
 
 ### Project-level installation
 
-Project-scoped agents and skill are available only in selected project.
+Project-scoped agents and skill are available only in selected project. Run these commands from the target workspace and set `CLONE_ROOT` to the absolute path of your cloned repository.
 
 ```bash
 PROJECT_ROOT=/path/to/your/project
+CLONE_ROOT=/absolute/path/to/prd-agents
+[ -n "$PROJECT_ROOT" ] && [ "$PROJECT_ROOT" != "/" ] || { echo "PROJECT_ROOT must be a real project directory"; exit 1; }
 mkdir -p "$PROJECT_ROOT/.claude/agents" "$PROJECT_ROOT/.claude/skills"
-cp agents/prd-*.md "$PROJECT_ROOT/.claude/agents/"
+cp "$CLONE_ROOT"/agents/prd-*.md "$PROJECT_ROOT/.claude/agents/"
 rm -rf "$PROJECT_ROOT/.claude/skills/prd-pipeline"
-cp -R skills/prd-pipeline "$PROJECT_ROOT/.claude/skills/"
-cp prd-shared-authoring-standards.md ~/.claude/
+cp -R "$CLONE_ROOT"/skills/prd-pipeline "$PROJECT_ROOT/.claude/skills/"
+cp "$CLONE_ROOT"/prd-shared-authoring-standards.md ~/.claude/
 ```
+
+The `PROJECT_ROOT` guard aborts before `rm -rf` when `PROJECT_ROOT` is empty or `/`, so removal cannot act on the root filesystem.
 
 Inspect or back up `$PROJECT_ROOT/.claude/skills/prd-pipeline` before removal. Shared standards stay at `~/.claude/prd-shared-authoring-standards.md` because tracked agent prompts reference that path.
 
@@ -102,13 +107,13 @@ Start Claude Code from target workspace, then invoke canonical pipeline.
 /prd-pipeline Create a use-case PRD for resetting a password as a Generic User.
 ```
 
-For update or Figma-backed work, pass target path, relevant source context, and Figma URL in same `/prd-pipeline` request. Pipeline derives safe decisions from supplied context and asks only for non-derivable decisions, such as approval of unresolved roles.
+For update or Figma-backed work, pass target path, relevant source context, and Figma URL in same `/prd-pipeline` request. Pipeline derives safe decisions from supplied context. It runs with `context: fork` and cannot prompt mid-run, so when it cannot derive a decision safely it stops with `BLOCKED` and returns the exact unresolved list. For unresolved roles, re-invoke `/prd-pipeline` with explicit approval for that exact list in the request.
 
 ## Run artifacts
 
 Pipeline reports absolute run artifact location in terminal response under `Artifacts:`. Pipeline stores artifacts outside repository source and does not source-control them. Never add generated PRDs, credentials, runtime state, or run artifacts to Git.
 
-Every phase directory has both `manifest.json` and `content.md`, including skipped phases. `manifest.json` stores normalized machine-readable state. `content.md` begins with normalized handoff envelope then preserves worker output or local evidence. Every terminal run has `07-summary`. Runs reaching QA include `05-qa-attempt-N`; only a run that reaches the QA path needs Phase 6 repair, consolidation, or repair-skipped artifact. Early terminal runs from LOAD, PLAN, CONTEXT, FIGMA, or AUTHOR stop with `07-summary` and do not create Phase 6 artifact.
+Every phase directory has both `manifest.json` and `content.md`, including skipped phases. `manifest.json` stores normalized machine-readable state. `content.md` begins with normalized handoff envelope then preserves worker output or local evidence. Every terminal run has `07-summary`. Runs reaching QA include `05-qa-attempt-N`; only a run whose final QA verdict is `CHECKLIST_PASSED` needs a Phase 6 repair-skipped or consolidation artifact. Early terminal runs from LOAD, PLAN, CONTEXT, FIGMA, or AUTHOR stop with `07-summary` and do not create Phase 6 artifact. A blocking QA terminal stopped before a passing verdict also carries no Phase 6 artifact.
 
 Successful terminal response has `PRD_PIPELINE_COMPLETE`, absolute target path, document type, mode, completed stages, `CHECKLIST_PASSED`, retry accounting, artifact directory, and notes. Blocked or failed terminal response has `PRD_PIPELINE_BLOCKED` or `PRD_PIPELINE_FAILED`, phase, error, target, remediation, artifacts, and unresolved items.
 
@@ -123,7 +128,7 @@ Successful terminal response has `PRD_PIPELINE_COMPLETE`, absolute target path, 
 | `ROLES_FILE_NOT_FOUND` | Roles source missing or unreadable | Add or specify readable `roles-permissions.md`, then rerun pipeline |
 | `RISK_ITEMS_FOUND` | Requested roles do not resolve without approval | Correct roles or explicitly approve exact unresolved-role list |
 | `PLAN_INCOMPLETE` | Planner result lacks required fields or safe target resolution | Supply missing scope, roles, documents, target, outline, or complexity facts |
-| `FIGMA_READ_FAILURE` | Required Figma source failed, was inaccessible, or returned malformed or empty result | Verify MCP availability and Figma access, then rerun |
+| `FIGMA_READ_FAILURE` | Required Figma source failed, was inaccessible, or returned malformed output or no output at all (an empty response, not a sparse-but-valid analysis) | Verify MCP availability and Figma access, then rerun |
 | `AUTHOR_INPUT_INVALID` | Selected author received invalid type, target, mode, or required handoff input | Correct planned input or target policy and rerun |
 | `AUTHOR_WRITE_FAILURE` | Author did not produce planned exact target | Correct target inputs or workspace write access, then rerun |
 | `DOCUMENT_NOT_FOUND` | Planned target cannot be read before QA or is absent after authoring | Restore or create exact planned target, then rerun |
@@ -145,7 +150,7 @@ Without supplied external evidence or authorized lookup, live ClickUp state is `
 
 ### Figma behavior
 
-Pipeline calls `prd-figma-reader` only for explicit Figma links in Plan Document. No planned links creates `03-figma` artifact pair with `SKIPPED` status and non-empty reason; skipped does not mean artifacts are absent. Required Figma source failure ends run with `FIGMA_READ_FAILURE`. Sparse valid analysis remains evidence and does not become failure solely for being sparse.
+Pipeline calls `prd-figma-reader` only for explicit Figma links in Plan Document. No planned links creates `03-figma` artifact pair with `SKIPPED` status and non-empty reason; skipped does not mean artifacts are absent. Required Figma source failure ends run with `FIGMA_READ_FAILURE`. An empty response means no output at all; sparse but valid analysis is evidence and does not become failure solely for being sparse.
 
 ## Workspace conventions
 
@@ -226,4 +231,4 @@ PY
 
 ## Privacy and repository scope
 
-Root `.gitignore` denies all files by default and includes only tracked agent sources, `skills/prd-pipeline/`, shared standards, and README. Keep local Claude Code settings, tokens, MCP credentials, histories, caches, sessions, generated requirements, and run artifacts out of version control.
+Root `.gitignore` denies all files by default and includes only tracked agent sources, `skills/prd-pipeline/`, shared standards, README, and the tracked design and plan docs (`docs/superpowers/specs/2026-09-24-prd-pipeline-design.md` and `docs/superpowers/plans/2026-09-24-prd-pipeline.md`). Keep local Claude Code settings, tokens, MCP credentials, histories, caches, sessions, generated requirements, and run artifacts out of version control.

@@ -13,7 +13,7 @@ Extract functional UI details from Figma for product requirements. You produce s
 
 ## Prerequisites
 
-This agent uses the **figma-console MCP server** (configured as `figma-console` in mcp.json). All Figma data extraction uses only these read-only tools:
+This agent uses the **figma-console-mcp MCP server**. The server name must match the `mcp__figma-console-mcp__` prefix declared in this agent's tool allowlist. All Figma data extraction uses only these read-only tools:
 
 | Tool | Purpose |
 |---|---|

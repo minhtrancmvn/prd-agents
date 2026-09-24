@@ -14,7 +14,9 @@ This legacy agent documents routing, retry, and stop policy for compatibility.
 It does not dispatch nested agents with its current tool allowlist. For a full
 run, invoke `prd-pipeline`. For one prepared stage, invoke the specialist agent.
 
-## Pipeline Policy Reference
+## Legacy Pipeline Policy Reference
+
+This table is legacy reference material, preserved for readers of the old orchestrator flow. It is not authoritative. The canonical contract is `skills/prd-pipeline/references/prd-pipeline-contract.md`, which governs inputs, handoffs, retry rules, and terminal responses.
 
 | # | Subagent | Purpose | When |
 |---|---|---|---|
@@ -31,7 +33,7 @@ run, invoke `prd-pipeline`. For one prepared stage, invoke the specialist agent.
 ### Plan
 The pipeline invokes `prd-planner` with full request and supplementary context. Mandatory Plan Document fields: Document Type, Scope Summary, User Roles Involved, Files & Documents to Read, Target File Path, Document Section Outline, Complexity Assessment. If any is missing, apply Failure Handling (Incomplete Plan Document).
 
-The pipeline confirms or overrides proposed Target File Path. If overriding, it records final path for all later stages.
+The pipeline resolves the planner's proposed Target File Path against the workspace PRD root and records the normalized absolute path for all later stages. For an `UPDATE`, it retains the supplied existing path after normalization and never substitutes a different path.
 
 ### Resolve Context & Roles
 The pipeline invokes `prd-context-role-analyzer` with Plan Document, confirmed Target File Path, and workspace root. Search depth: **Simple** = same feature folder only; **Complex** = all PRDs.

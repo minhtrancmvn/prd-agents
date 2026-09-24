@@ -14,12 +14,12 @@ Each pipeline run writes durable artifacts outside repository source. Every pres
 ├── 05-qa-attempt-1/
 ├── 05-qa-attempt-2/             # only when needed
 ├── 06-repair-skipped/            # required after clean QA when no consolidation
-├── 06-repair-attempt-1/          # only when CHECKLIST_FAILED
+├── 06-repair-attempt-N/          # only when CHECKLIST_FAILED, N up to the retry limit
 ├── 06-consolidation-attempt-1/   # only for optional post-pass consolidation
 └── 07-summary/
 ```
 
-`05-qa-attempt-2` exists only after another QA attempt is needed. A Complex request can include a further QA/repair cycle within its retry limit. `06-repair-skipped` is required when clean QA proceeds without repair or consolidation. `06-repair-attempt-1` exists only after a failed QA result triggers repair. `06-consolidation-attempt-1` is separate from normal retry accounting and exists only for optional one-pass consolidation. `07-summary` is required for every terminal run.
+`06-repair-attempt-N` uses `N` from `1` up to the plan's `retry_limit`: `1` for `Simple`, `2` for `Complex`. `05-qa-attempt-2` exists only after another QA attempt is needed. A Complex request can include a further QA/repair cycle within its retry limit. `06-repair-skipped` is required when clean QA proceeds without repair or consolidation. `06-repair-attempt-N` exists only after a failed QA result triggers repair. `06-consolidation-attempt-1` is separate from normal retry accounting and exists only for optional one-pass consolidation. `07-summary` is required for every terminal run.
 
 ## Early terminal layout
 

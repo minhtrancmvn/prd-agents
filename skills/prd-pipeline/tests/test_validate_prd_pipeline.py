@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import re
 import sys
@@ -98,11 +100,14 @@ README_USER_INSTALL_COMMANDS = (
     "cp -R skills/prd-pipeline ~/.claude/skills/",
 )
 README_PROJECT_INSTALL_COMMANDS = (
+    "PROJECT_ROOT=/path/to/your/project",
+    "CLONE_ROOT=/absolute/path/to/prd-agents",
+    '[ -n "$PROJECT_ROOT" ] && [ "$PROJECT_ROOT" != "/" ] || { echo "PROJECT_ROOT must be a real project directory"; exit 1; }',
     'mkdir -p "$PROJECT_ROOT/.claude/agents" "$PROJECT_ROOT/.claude/skills"',
-    'cp agents/prd-*.md "$PROJECT_ROOT/.claude/agents/"',
+    'cp "$CLONE_ROOT"/agents/prd-*.md "$PROJECT_ROOT/.claude/agents/"',
     'rm -rf "$PROJECT_ROOT/.claude/skills/prd-pipeline"',
-    'cp -R skills/prd-pipeline "$PROJECT_ROOT/.claude/skills/"',
-    "cp prd-shared-authoring-standards.md ~/.claude/",
+    'cp -R "$CLONE_ROOT"/skills/prd-pipeline "$PROJECT_ROOT/.claude/skills/"',
+    'cp "$CLONE_ROOT"/prd-shared-authoring-standards.md ~/.claude/',
 )
 README_VALIDATOR_COMMANDS = (
     "python3 skills/prd-pipeline/scripts/validate-prd-pipeline.py package --skill-root skills/prd-pipeline",
@@ -167,12 +172,39 @@ class ReadmeContractTests(unittest.TestCase):
             set(),
         )
 
-    def test_readme_limits_phase_six_artifacts_to_qa_runs(self) -> None:
+    def test_readme_limits_phase_six_artifacts_to_clean_qa_runs(self) -> None:
         readme_text = README_PATH.read_text(encoding="utf-8")
         self.assertIn("Every terminal run has `07-summary`.", readme_text)
-        self.assertIn("only a run that reaches the QA path needs Phase 6", readme_text)
+        self.assertIn("only a run whose final QA verdict is `CHECKLIST_PASSED` needs a Phase 6", readme_text)
         self.assertIn("LOAD, PLAN, CONTEXT, FIGMA, or AUTHOR", readme_text)
         self.assertIn("do not create Phase 6 artifact", readme_text)
+        self.assertIn("A blocking QA terminal stopped before a passing verdict also carries no Phase 6 artifact.", readme_text)
+
+    def test_readme_documents_python_floor(self) -> None:
+        readme_text = README_PATH.read_text(encoding="utf-8")
+        self.assertIn("Python 3.10 or newer", readme_text)
+
+    def test_readme_gitignore_inventory_lists_tracked_design_and_plan_docs(self) -> None:
+        readme_text = README_PATH.read_text(encoding="utf-8")
+        self.assertIn("docs/superpowers/specs/2026-09-24-prd-pipeline-design.md", readme_text)
+        self.assertIn("docs/superpowers/plans/2026-09-24-prd-pipeline.md", readme_text)
+
+    def test_readme_project_install_commands_are_workspace_safe(self) -> None:
+        readme_text = README_PATH.read_text(encoding="utf-8")
+        self.assertIn("CLONE_ROOT=/absolute/path/to/prd-agents", readme_text)
+        self.assertIn('[ -n "$PROJECT_ROOT" ] && [ "$PROJECT_ROOT" != "/" ]', readme_text)
+        self.assertIn("Run these commands from the target workspace", readme_text)
+
+    def test_readme_figma_failure_wording_distinguishes_empty_from_sparse(self) -> None:
+        readme_text = README_PATH.read_text(encoding="utf-8")
+        self.assertIn("no output at all", readme_text)
+        self.assertIn("valid analysis is evidence", readme_text)
+        self.assertIn("`figma-console-mcp` MCP server", readme_text)
+
+    def test_readme_routes_unresolved_roles_to_caller_reinvocation(self) -> None:
+        readme_text = README_PATH.read_text(encoding="utf-8")
+        self.assertIn("cannot prompt mid-run", readme_text)
+        self.assertIn("re-invoke `/prd-pipeline` with explicit approval", readme_text)
 
     def test_readme_defines_validation_failed_for_artifacts_and_worker_output(self) -> None:
         readme_text = README_PATH.read_text(encoding="utf-8")
@@ -363,6 +395,65 @@ class SpecialistAgentContractTests(unittest.TestCase):
         }.items():
             with self.subTest(status=status):
                 self.assertIn(f"{status} -> {mapping}", text)
+
+    def test_skill_delegates_relative_target_resolution_to_shared_standards(self) -> None:
+        text = SKILL_PATH.read_text(encoding="utf-8")
+        self.assertIn("prd-shared-authoring-standards.md", text)
+        self.assertIn("`PRD Root Directory`", text)
+        for term in ("explicit PRD root", "`business-requirements/`", "`prd/`", "workspace root"):
+            with self.subTest(term=term):
+                self.assertIn(term, text)
+        self.assertNotIn("<workspace_root>/prd", text)
+
+    def test_skill_report_validator_command_passes_repository_root(self) -> None:
+        text = SKILL_PATH.read_text(encoding="utf-8")
+        commands = [line for line in text.splitlines() if "validate-prd-pipeline.py run" in line]
+        self.assertTrue(commands, "missing REPORT validator command")
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertIn("--repository-root", command)
+
+    def test_skill_places_validator_evidence_record_inside_summary(self) -> None:
+        text = SKILL_PATH.read_text(encoding="utf-8")
+        self.assertIn("as a file inside `07-summary`", text)
+        self.assertIn("list that record as a relative artifact entry in `07-summary/manifest.json`", text)
+
+    def test_skill_figma_failure_wording_distinguishes_empty_from_sparse(self) -> None:
+        text = SKILL_PATH.read_text(encoding="utf-8")
+        self.assertIn("no output at all", text)
+        self.assertIn("valid analysis is evidence", text)
+
+    def test_skill_terminates_for_role_approval_instead_of_prompting(self) -> None:
+        text = SKILL_PATH.read_text(encoding="utf-8")
+        self.assertIn("context: fork", text)
+        self.assertIn("do not prompt the user mid-run", text)
+        self.assertIn("instruct the caller to re-invoke with explicit approval", text)
+        self.assertNotIn("ask user only whether to approve", text)
+
+    def test_skill_contract_and_readme_share_one_phase_six_rule(self) -> None:
+        skill_text = SKILL_PATH.read_text(encoding="utf-8")
+        contract_text = CONTRACT_PATH.read_text(encoding="utf-8")
+        readme_text = README_PATH.read_text(encoding="utf-8")
+        self.assertIn("When the final QA verdict is `CHECKLIST_PASSED`, a Phase 6 pair", skill_text)
+        self.assertIn("only when the final QA verdict is `CHECKLIST_PASSED`", contract_text)
+        self.assertIn("only a run whose final QA verdict is `CHECKLIST_PASSED` needs a Phase 6", readme_text)
+
+    def test_artifact_format_documents_repair_attempt_range(self) -> None:
+        text = ARTIFACT_FORMAT_PATH.read_text(encoding="utf-8")
+        self.assertIn("06-repair-attempt-N/", text)
+        self.assertIn("N up to the retry limit", text)
+
+    def test_figma_reader_declares_matching_mcp_server_name(self) -> None:
+        text = FIGMA_READER_PATH.read_text(encoding="utf-8")
+        self.assertIn("mcp__figma-console-mcp__", text)
+        self.assertIn("figma-console-mcp MCP server", text)
+        self.assertNotIn("configured as `figma-console`", text)
+
+    def test_legacy_orchestrator_defers_to_authoritative_contract(self) -> None:
+        text = ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+        self.assertIn("references/prd-pipeline-contract.md", text)
+        self.assertIn("not authoritative", text)
+        self.assertNotIn("confirms or overrides proposed Target File Path", text)
 
 
 class RunValidationTests(unittest.TestCase):
@@ -923,6 +1014,137 @@ class RunValidationTests(unittest.TestCase):
         self.update_manifest("07-summary", status="FAILED", error_code="CONSOLIDATION_REGRESSION", qa_verdict="CHECKLIST_FAILED")
         self.assertEqual(validator.validate_run(self.run_dir), [])
 
+    def test_no_figma_early_terminal_run_validates(self) -> None:
+        self.make_early_terminal_run("04-author", phase="AUTHOR", error_code="AUTHOR_INPUT_INVALID", status="FAILED")
+        self.update_manifest("03-figma", status="SKIPPED")
+        self.assertEqual(validator.validate_run(self.run_dir), [])
+
+    def test_blocking_qa_terminal_without_phase_six_validates(self) -> None:
+        cases = (
+            ("BLOCKED", "ROLES_FILE_NOT_FOUND"),
+            ("FAILED", "DOCUMENT_NOT_FOUND"),
+            ("FAILED", "INPUT_INVALID"),
+        )
+        for index, (status, error_code) in enumerate(cases):
+            with self.subTest(error_code=error_code):
+                self.make_successful_run()
+                for path in (self.run_dir / "06-repair-skipped").iterdir():
+                    path.unlink()
+                (self.run_dir / "06-repair-skipped").rmdir()
+                self.update_manifest("05-qa-attempt-1", status=status, error_code=error_code, next_agent="STOP")
+                self.update_manifest("07-summary", status=status, error_code=error_code, next_agent="STOP")
+                self.assertEqual(validator.validate_run(self.run_dir), [])
+                self.run_dir = Path(self.temp_dir.name) / f"run-blocking-qa-{index}"
+
+    def test_report_validation_failure_after_clean_qa_validates(self) -> None:
+        self.make_successful_run()
+        self.update_manifest("07-summary", status="FAILED", error_code="VALIDATION_FAILED", next_agent="STOP")
+        self.assertEqual(validator.validate_run(self.run_dir), [])
+
+    def test_report_validation_failure_requires_clean_qa(self) -> None:
+        self.make_successful_run()
+        self.update_manifest("05-qa-attempt-1", status="FAILED", error_code="INPUT_INVALID", next_agent="STOP")
+        self.update_manifest("07-summary", status="FAILED", error_code="VALIDATION_FAILED", next_agent="STOP")
+        self.assert_error_code("invalid_failed_terminal_topology")
+
+    def test_qa_path_rejects_non_successful_base_phase(self) -> None:
+        self.make_successful_run()
+        self.update_manifest("02-context", status="BLOCKED", error_code="ROLES_FILE_NOT_FOUND")
+        self.assert_error_code("invalid_terminal_topology")
+
+    def test_qa_path_rejects_terminal_base_phase(self) -> None:
+        self.make_successful_run()
+        self.update_manifest("04-author", terminal=True)
+        self.assert_error_code("invalid_terminal_topology")
+
+    def test_qa_path_accepts_warned_figma_phase(self) -> None:
+        self.make_successful_run()
+        self.update_manifest("03-figma", status="SUCCESS_WITH_WARNINGS")
+        self.assertEqual(validator.validate_run(self.run_dir), [])
+
+    def test_success_summary_requires_terminal_stop_and_no_error(self) -> None:
+        cases = (
+            {"terminal": False},
+            {"error_code": "INPUT_INVALID"},
+            {"next_agent": "prd-author"},
+        )
+        for index, updates in enumerate(cases):
+            with self.subTest(updates=updates):
+                self.make_successful_run()
+                self.update_manifest("07-summary", **updates)
+                self.assert_error_code("invalid_success_terminal_topology")
+                self.run_dir = Path(self.temp_dir.name) / f"run-summary-{index}"
+
+    def make_repair_record_run(self) -> None:
+        self.make_successful_run(qa_attempts=2, complexity="Complex")
+        self.update_manifest("05-qa-attempt-1", status="SUCCESS", error_code="CHECKLIST_FAILED", qa_verdict="CHECKLIST_FAILED", next_agent="prd-author")
+        for path in (self.run_dir / "06-repair-skipped").iterdir():
+            path.unlink()
+        (self.run_dir / "06-repair-skipped").rmdir()
+        self.write_phase(self.run_dir, "06-repair-attempt-1", phase="REPAIR", retry_count=1, complexity="Complex")
+
+    def assert_body_required(self, directory: str) -> None:
+        content = (self.run_dir / directory / "content.md").read_text(encoding="utf-8")
+        self.update_content(directory, content.split("\n\n", 1)[0] + "\n\n")
+        self.assert_error_code("missing_content_body")
+
+    def test_repair_record_phases_require_content_body(self) -> None:
+        directories = ("04-author", "05-qa-attempt-1", "06-repair-attempt-1", "07-summary")
+        for index, directory in enumerate(directories):
+            with self.subTest(directory=directory):
+                self.make_repair_record_run()
+                self.assert_body_required(directory)
+                self.run_dir = Path(self.temp_dir.name) / f"run-repair-body-{index}"
+
+    def test_consolidation_phase_requires_content_body(self) -> None:
+        self.make_successful_run(qa_attempts=2)
+        self.update_manifest("06-repair-skipped", consolidation_attempts=1)
+        self.update_manifest("05-qa-attempt-2", retry_count=0)
+        self.write_phase(self.run_dir, "06-consolidation-attempt-1", phase="REPAIR", consolidation_attempts=1, qa_verdict="CHECKLIST_PASSED")
+        self.assert_body_required("06-consolidation-attempt-1")
+
+    def test_non_record_phases_allow_empty_body(self) -> None:
+        self.make_successful_run()
+        for directory in ("01-plan", "02-context"):
+            content = (self.run_dir / directory / "content.md").read_text(encoding="utf-8")
+            self.update_content(directory, content.split("\n\n", 1)[0] + "\n\n")
+        self.assertNotIn("missing_content_body", {error.code for error in validator.validate_run(self.run_dir)})
+
+    def test_artifact_symlink_escaping_phase_directory_is_rejected(self) -> None:
+        self.make_successful_run()
+        outside = Path(self.temp_dir.name) / "outside.md"
+        outside.write_text("secret", encoding="utf-8")
+        (self.run_dir / "01-plan" / "linked.md").symlink_to(outside)
+        self.update_manifest(
+            "01-plan",
+            artifacts=[{"path": "content.md", "type": "content"}, {"path": "linked.md", "type": "evidence"}],
+        )
+        self.assert_error_code("invalid_artifact_path")
+
+    def test_artifact_inside_phase_directory_still_validates(self) -> None:
+        self.make_successful_run()
+        (self.run_dir / "01-plan" / "evidence.md").write_text("evidence", encoding="utf-8")
+        self.update_manifest(
+            "01-plan",
+            artifacts=[{"path": "content.md", "type": "content"}, {"path": "evidence.md", "type": "evidence"}],
+        )
+        self.assertEqual(validator.validate_run(self.run_dir), [])
+
+    def test_missing_manifest_reports_error_without_crash(self) -> None:
+        self.make_early_terminal_run("01-plan", phase="PLAN", error_code="PLAN_INCOMPLETE", status="BLOCKED")
+        (self.run_dir / "01-plan" / "manifest.json").unlink()
+        self.assert_error_code("missing_manifest")
+
+    def test_unparseable_manifest_reports_error_without_crash(self) -> None:
+        self.make_successful_run()
+        (self.run_dir / "02-context" / "manifest.json").write_text("{not json", encoding="utf-8")
+        self.assert_error_code("invalid_json")
+
+    def test_non_utf8_content_reports_error_without_crash(self) -> None:
+        self.make_successful_run()
+        (self.run_dir / "04-author" / "content.md").write_bytes(b"\xff\xfe\x00\x01invalid")
+        self.assert_error_code("invalid_content")
+
     def test_relative_target_path_is_rejected(self) -> None:
         self.make_successful_run()
         self.update_manifest("04-author", target_path="relative/target.md")
@@ -982,16 +1204,17 @@ class RunValidationTests(unittest.TestCase):
 
     def test_cli_accepts_repository_root_flag(self) -> None:
         self.make_successful_run()
-        self.assertEqual(
-            validator.main([
+        stream = io.StringIO()
+        with contextlib.redirect_stdout(stream):
+            exit_code = validator.main([
                 "run",
                 "--run-dir",
                 str(self.run_dir),
                 "--repository-root",
                 str(self.run_dir.parent),
-            ]),
-            1,
-        )
+            ])
+        self.assertEqual(exit_code, 1)
+        self.assertIn("ERROR run_dir_inside_repository", stream.getvalue())
 
     def test_duplicate_content_artifact_is_rejected(self) -> None:
         self.make_successful_run()
@@ -1112,10 +1335,21 @@ class RunValidationTests(unittest.TestCase):
         self.assert_clean_qa_rejects_terminal_failure("RISK_ITEMS_FOUND")
 
     def test_qa_retry_exhausted_run_requires_failed_final_qa_topology(self) -> None:
-        self.test_simple_exhausted_terminal_allows_consumed_repair_topology()
+        self.make_exhausted_run("Simple")
+        self.assertEqual(validator.validate_run(self.run_dir), [])
+        self.update_manifest("05-qa-attempt-2", status="SUCCESS", error_code="NONE", qa_verdict="CHECKLIST_PASSED")
+        self.assert_error_code("invalid_failed_terminal_topology")
 
     def test_consolidation_regression_run_requires_failed_final_qa_topology(self) -> None:
-        self.test_consolidation_regression_terminal_allows_failed_final_qa_topology()
+        self.make_successful_run(qa_attempts=2)
+        self.update_manifest("05-qa-attempt-1", retry_count=0)
+        self.update_manifest("06-repair-skipped", consolidation_attempts=1)
+        self.update_manifest("05-qa-attempt-2", status="SUCCESS", error_code="CHECKLIST_FAILED", qa_verdict="CHECKLIST_FAILED", next_agent="prd-author", retry_count=0)
+        self.write_phase(self.run_dir, "06-consolidation-attempt-1", phase="REPAIR", status="SUCCESS", consolidation_attempts=1, qa_verdict="CHECKLIST_PASSED")
+        self.update_manifest("07-summary", status="FAILED", error_code="CONSOLIDATION_REGRESSION", qa_verdict="CHECKLIST_FAILED")
+        self.assertEqual(validator.validate_run(self.run_dir), [])
+        self.update_manifest("05-qa-attempt-2", status="SUCCESS", error_code="NONE", qa_verdict="CHECKLIST_PASSED")
+        self.assert_error_code("invalid_failed_terminal_topology")
 
 
 if __name__ == "__main__":
