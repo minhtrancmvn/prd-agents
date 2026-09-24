@@ -69,6 +69,18 @@ SKILL_REQUIRED_REFERENCES = {
 }
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
+README_PATH = REPOSITORY_ROOT / "README.md"
+README_REQUIRED_TERMS = {
+    "skills/prd-pipeline/SKILL.md",
+    "cp -R skills/prd-pipeline ~/.claude/skills/",
+    "/prd-pipeline",
+    "manifest.json",
+    "content.md",
+    "QA_RETRY_EXHAUSTED",
+    "NOT_CHECKED",
+    "validate-prd-pipeline.py package",
+    "validate-prd-pipeline.py run",
+}
 ORCHESTRATOR_PATH = REPOSITORY_ROOT / "agents" / "prd-orchestrator.md"
 FIGMA_READER_PATH = REPOSITORY_ROOT / "agents" / "prd-figma-reader.md"
 CHECKER_PATH = REPOSITORY_ROOT / "agents" / "prd-consistency-checker.md"
@@ -87,6 +99,19 @@ if spec is None or spec.loader is None:
 validator: ModuleType = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = validator
 spec.loader.exec_module(validator)
+
+
+class ReadmeContractTests(unittest.TestCase):
+    def test_readme_documents_canonical_pipeline_contract(self) -> None:
+        readme_text = README_PATH.read_text(encoding="utf-8")
+        self.assertEqual(
+            {term for term in README_REQUIRED_TERMS if term not in readme_text},
+            set(),
+        )
+
+    def test_readme_removes_obsolete_manual_orchestration_guidance(self) -> None:
+        readme_text = README_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("Until its tool allowlist includes Agent", readme_text)
 
 
 class PackageValidationTests(unittest.TestCase):

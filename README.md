@@ -1,206 +1,183 @@
 # PRD Agents
 
-PRD Agents is a Claude Code subagent pack for creating and updating product requirements documents. It defines a staged business-analysis workflow for use cases, notifications, and email templates, with canonical role resolution, optional read-only Figma analysis, type-specific authoring rules, and final consistency checks.
+PRD Agents provides eight specialists, one canonical pipeline skill, and shared authoring standards for creating and updating use-case product requirements documents (PRDs), notification requirements, and email-template requirements. `prd-pipeline` is sole executable entry point for full end-to-end runs. `prd-orchestrator` is legacy compatibility policy only; it does not execute or coordinate a full run.
 
-This repository versions only eight PRD agent definitions and their shared authoring standards. Other files in a local `~/.claude` directory, such as settings, credentials, histories, caches, hooks, and databases, are runtime state and are intentionally outside this repository.
+Repository tracks source definitions and validation tooling only. Generated requirements, run artifacts, Claude Code settings, credentials, histories, caches, hooks, and databases are runtime state and remain outside version control.
 
 ## Supported documents
 
 | Document type | Author agent | Main output |
 |---|---|---|
-| Use Case | `prd-author` | User workflow, access, core functionality, grouped business rules, and optional flows/designs |
+| Use Case | `prd-author` | User workflow, access, core functionality, grouped business rules, and optional flows or designs |
 | Notification | `prd-noti-req-author` | Trigger, recipients, delivery channel, exact notification content, and content parameters |
 | Email Template | `prd-email-req-author` | Trigger, recipients, delivery behavior, exact email content, and dynamic variables |
 
-## Intended workflow
+## Workflow
 
 ```text
-prd-planner
+/prd-pipeline
     |
     v
-prd-context-role-analyzer
-    |
-    +--> prd-figma-reader (only when Figma URLs are provided)
-    |
-    v
-prd-author | prd-noti-req-author | prd-email-req-author
-    |
-    v
-prd-consistency-checker
+LOAD -> PLAN -> CONTEXT -> FIGMA -> AUTHOR -> QA -> REPAIR/RECHECK -> REPORT
+           |          |        |                  |
+           |          |        +--> SKIPPED when no planned Figma links
+           |          +--> blocks on unreadable roles or unapproved role risks
+           +--> selects document type, target path, and retry budget
 ```
 
-1. `prd-planner` classifies the document type, mode, scope, roles, target path, and complexity.
-2. `prd-context-role-analyzer` resolves canonical roles and gathers related requirements context.
-3. `prd-figma-reader` extracts functional UI details when the request contains Figma links.
-4. One type-specific author writes or updates the target document.
-5. `prd-consistency-checker` reports structural, role, terminology, language, business-rule, visual, and Figma consistency findings.
-
-Simple requests allow one correction retry after the first QA run. Complex requests allow two correction retries. Author agents can write and edit target requirements files; planner, context, Figma, orchestrator, and checker agents are read-only.
-
-> [!IMPORTANT]
-> The current `prd-orchestrator` frontmatter allows only `Read`, `Glob`, and `Grep`. Current Claude Code requires the `Agent` tool for a subagent to spawn other subagents, so `prd-orchestrator` cannot execute the full nested pipeline by itself as currently defined. Until its tool allowlist includes `Agent`, have the main Claude Code conversation coordinate the specialist agents in sequence.
+`prd-pipeline` persists phase artifacts, dispatches specialists, applies gates, and validates completed runs. It invokes these workers in pipeline-controlled order: `prd-planner`, `prd-context-role-analyzer`, optional `prd-figma-reader`, one type-specific author, and `prd-consistency-checker`. Run a named specialist only for one prepared stage with required inputs already available. Full runs use `/prd-pipeline`; legacy `prd-orchestrator` remains policy-only.
 
 ## Repository contents
 
-| Path | Agent or resource | Responsibility |
+| Path | Resource | Responsibility |
 |---|---|---|
-| `agents/prd-orchestrator.md` | `prd-orchestrator` | Defines stage ordering, retries, and stop conditions |
-| `agents/prd-planner.md` | `prd-planner` | Produces the seven-field Plan Document |
+| `skills/prd-pipeline/SKILL.md` | `prd-pipeline` | Canonical executable full-run coordinator |
+| `skills/prd-pipeline/references/prd-pipeline-contract.md` | Pipeline contract | Defines inputs, handoffs, retry rules, and terminal responses |
+| `skills/prd-pipeline/references/prd-artifact-format.md` | Artifact format | Defines phase artifact pairs and manifest schema |
+| `skills/prd-pipeline/scripts/validate-prd-pipeline.py` | Validator | Validates installed package structure and completed run artifacts |
+| `skills/prd-pipeline/tests/test_validate_prd_pipeline.py` | Contract tests | Tests package, run, specialist, and README contracts |
+| `agents/prd-orchestrator.md` | `prd-orchestrator` | Legacy compatibility policy; directs full runs to `prd-pipeline` |
+| `agents/prd-planner.md` | `prd-planner` | Produces seven-field Plan Document |
 | `agents/prd-context-role-analyzer.md` | `prd-context-role-analyzer` | Resolves exact role names and related PRD context |
-| `agents/prd-figma-reader.md` | `prd-figma-reader` | Reads functional UI details from Figma through read-only MCP tools |
+| `agents/prd-figma-reader.md` | `prd-figma-reader` | Reads functional Figma details through read-only tools |
 | `agents/prd-author.md` | `prd-author` | Writes or updates use-case PRDs |
 | `agents/prd-noti-req-author.md` | `prd-noti-req-author` | Writes or updates notification requirements |
-| `agents/prd-email-req-author.md` | `prd-email-req-author` | Writes or updates email template requirements |
-| `agents/prd-consistency-checker.md` | `prd-consistency-checker` | Reports checklist failures and consolidation recommendations |
+| `agents/prd-email-req-author.md` | `prd-email-req-author` | Writes or updates email-template requirements |
+| `agents/prd-consistency-checker.md` | `prd-consistency-checker` | Reports exclusive QA verdicts and normalized findings |
 | `prd-shared-authoring-standards.md` | Shared standards | Defines workspace discovery, metadata, versioning, references, diagrams, language, and verification rules |
 
-Subagent files use Markdown with YAML frontmatter. Claude Code requires unique `name` and `description` fields; each file in this repository also declares an explicit tool allowlist.
+Subagent files use Markdown with YAML frontmatter. Each definition declares explicit tool allowlist.
 
 ## Prerequisites
 
-- [Claude Code](https://code.claude.com/docs/en/overview) with custom subagent support.
-- A target workspace containing exactly one discoverable `roles-permissions.md`, or an explicit roles-file path in the request.
-- Product context sufficient to identify scope, involved roles, source documents, and target requirements path.
-- Optional: a configured `figma-console` MCP server and valid Figma access when requests contain Figma URLs. See [Connect Claude Code to tools via MCP](https://code.claude.com/docs/en/mcp).
+- [Claude Code](https://code.claude.com/docs/en/overview) with custom skills and subagent support.
+- Target workspace containing exactly one discoverable `roles-permissions.md`, or explicit roles-file path in request.
+- Product context sufficient to identify scope, roles, source documents, and target requirements path.
+- Optional: configured `figma-console` MCP server and Figma access when request contains Figma URLs. See [Connect Claude Code to tools via MCP](https://code.claude.com/docs/en/mcp).
 
-No package manager, build system, application runtime, or test framework is required by the tracked repository files.
+No package manager, application runtime, or build system is required.
 
 ## Installation
 
+Clone repository, then install agents, shared standards, and canonical skill.
+
 ### User-level installation
 
-User-level subagents are available across all projects. Clone the repository, then copy its agent definitions and shared standards into `~/.claude`:
+User-level components are available across projects.
 
 ```bash
 git clone https://github.com/minhtrancmvn/prd-agents.git
 cd prd-agents
-mkdir -p ~/.claude/agents
+mkdir -p ~/.claude/agents ~/.claude/skills
 cp agents/prd-*.md ~/.claude/agents/
 cp prd-shared-authoring-standards.md ~/.claude/
+rm -rf ~/.claude/skills/prd-pipeline
+cp -R skills/prd-pipeline ~/.claude/skills/
 ```
 
-These `cp` commands overwrite same-named files. Back up local customizations before reinstalling or updating.
-
-Claude Code watches an existing `~/.claude/agents/` directory and normally detects additions or edits within a few seconds. Restart Claude Code if this installation created the first `agents` directory during an already-running session.
+Inspect or back up `~/.claude/skills/prd-pipeline` before running `rm -rf`. It removes only existing installed pipeline with that same name. Do not use it to remove any other skill directory.
 
 ### Project-level installation
 
-Claude Code also discovers project-scoped definitions under `.claude/agents/`:
+Project-scoped agents and skill are available only in selected project.
 
 ```bash
 PROJECT_ROOT=/path/to/your/project
-mkdir -p "$PROJECT_ROOT/.claude/agents"
+mkdir -p "$PROJECT_ROOT/.claude/agents" "$PROJECT_ROOT/.claude/skills"
 cp agents/prd-*.md "$PROJECT_ROOT/.claude/agents/"
-mkdir -p ~/.claude
+rm -rf "$PROJECT_ROOT/.claude/skills/prd-pipeline"
+cp -R skills/prd-pipeline "$PROJECT_ROOT/.claude/skills/"
 cp prd-shared-authoring-standards.md ~/.claude/
 ```
 
-The shared standards remain user-level because the current agent prompts reference `~/.claude/prd-shared-authoring-standards.md`. If you move that file into a project, update every reference consistently.
+Inspect or back up `$PROJECT_ROOT/.claude/skills/prd-pipeline` before removal. Shared standards stay at `~/.claude/prd-shared-authoring-standards.md` because tracked agent prompts reference that path.
 
-See [Create custom subagents](https://code.claude.com/docs/en/sub-agents) for current scope, precedence, frontmatter, and invocation behavior.
+Claude Code normally detects additions or edits in existing skill and agent directories within seconds. Restart Claude Code if installation created first such directory in active session.
 
 ## Quick start
 
-Start Claude Code from the workspace where the requirements documents live. Ask the main conversation to coordinate the specialists explicitly:
+Start Claude Code from target workspace, then invoke canonical pipeline.
 
 ```text
-Create a use-case PRD for resetting a password as a Generic User.
-Coordinate the PRD agents in this order: prd-planner, prd-context-role-analyzer,
-the applicable author, then prd-consistency-checker. Confirm the target path before writing.
+/prd-pipeline Create a use-case PRD for resetting a password as a Generic User.
 ```
 
-Figma-backed example:
+For update or Figma-backed work, pass target path, relevant source context, and Figma URL in same `/prd-pipeline` request. Pipeline derives safe decisions from supplied context and asks only for non-derivable decisions, such as approval of unresolved roles.
 
-```text
-Create an email template requirement from this Figma design: <figma-url>.
-Use prd-planner, prd-context-role-analyzer, prd-figma-reader,
-prd-email-req-author, and prd-consistency-checker in sequence.
-```
+## Run artifacts
 
-Update example:
+Pipeline reports absolute run artifact location in terminal response under `Artifacts:`. Pipeline stores artifacts outside repository source and does not source-control them. Never add generated PRDs, credentials, runtime state, or run artifacts to Git.
 
-```text
-Update <path-to-notification-requirement> with the new delivery rule.
-Preserve content outside the requested scope and use the PRD agent workflow.
-```
+Every phase directory has both `manifest.json` and `content.md`, including skipped phases. `manifest.json` stores normalized machine-readable state. `content.md` begins with normalized handoff envelope then preserves worker output or local evidence. Required lifecycle includes `00-load`, `01-plan`, `02-context`, `03-figma`, `04-author`, `05-qa-attempt-N`, required Phase 6 repair or skip artifact, and `07-summary` for every terminal run.
 
-Claude Code can delegate based on agent descriptions, or you can explicitly name or `@`-mention a specialist. Keep orchestration in the main conversation until the `prd-orchestrator` tool allowlist includes `Agent`.
+Successful terminal response has `PRD_PIPELINE_COMPLETE`, absolute target path, document type, mode, completed stages, `CHECKLIST_PASSED`, retry accounting, artifact directory, and notes. Blocked or failed terminal response has `PRD_PIPELINE_BLOCKED` or `PRD_PIPELINE_FAILED`, phase, error, target, remediation, artifacts, and unresolved items.
+
+## Status, retry, ClickUp, and Figma behavior
+
+### Status and error signals
+
+| Signal | Meaning | Next action |
+|---|---|---|
+| `ROLES_FILE_NOT_FOUND` | Roles source missing or unreadable | Add or specify readable `roles-permissions.md`, then rerun pipeline |
+| `RISK_ITEMS_FOUND` | Requested roles do not resolve without approval | Correct roles or explicitly approve exact unresolved-role list |
+| `PLAN_INCOMPLETE` | Planner result lacks required fields or safe target resolution | Supply missing scope, roles, documents, target, outline, or complexity facts |
+| `FIGMA_READ_FAILURE` | Required Figma source failed, was inaccessible, or returned malformed or empty result | Verify MCP availability and Figma access, then rerun |
+| `AUTHOR_WRITE_FAILURE` | Author did not produce planned exact target | Correct target inputs or workspace write access, then rerun |
+| `CHECKLIST_FAILED` | QA found blocking findings with retry budget remaining | Pipeline supplies complete findings to selected author and reruns QA |
+| `QA_RETRY_EXHAUSTED` | Normal correction budget consumed without clean QA | Resolve reported findings, then start new run |
+| `CONSOLIDATION_REGRESSION` | Optional post-pass consolidation caused QA failure | Revert or correct consolidation changes, then start new run |
+| `VALIDATION_FAILED` | Package or run artifact validation failed | Repair reported artifact or contract issue and rerun validation |
+| `CHECKLIST_PASSED` | QA found no blocking checklist issue | Pipeline validates run and reports completion |
+
+`CHECKLIST_PASSED` and `CHECKLIST_FAILED` are mutually exclusive QA outcomes. Pipeline does not claim success until final checker verdict passes and run validator succeeds.
+
+### Retry budgets
+
+`Simple` plans allow one normal correction retry. `Complex` plans allow two. `UNKNOWN` complexity allows zero until planner resolves complexity. Pipeline increments normal retry count only after selected author returns non-empty correction and exact target path can be read. Optional consolidation is one separate cleanup attempt and does not consume normal retry budget.
+
+### ClickUp verification
+
+Without supplied external evidence or authorized lookup, live ClickUp state is `NOT_CHECKED`. Pipeline may perform URL syntax checks but never treats syntax as live verification and never invents ClickUp URLs or validity claims.
+
+### Figma behavior
+
+Pipeline calls `prd-figma-reader` only for explicit Figma links in Plan Document. No planned links creates `03-figma` artifact pair with `SKIPPED` status and non-empty reason; skipped does not mean artifacts are absent. Required Figma source failure ends run with `FIGMA_READ_FAILURE`. Sparse valid analysis remains evidence and does not become failure solely for being sparse.
 
 ## Workspace conventions
 
 ### Roles and permissions
 
-Role-consuming agents resolve the workspace roles file in this order:
-
-1. Use an explicit path from the request or Plan Document.
-2. Search the workspace with `**/roles-permissions.md`.
-3. Stop with `ROLES_FILE_NOT_FOUND` if no file can be read.
-
-Role names in requirements must match the canonical file exactly. The User Access section wraps role names in backticks; body text uses “user” or “users” instead of repeating role names.
+Role-consuming phases resolve roles source in this order: explicit request or Plan Document path, workspace `**/roles-permissions.md` search, then terminal `ROLES_FILE_NOT_FOUND`. Role names in requirements must match canonical source exactly. User Access wraps role names in backticks; body text uses “user” or “users” instead of repeating names.
 
 ### PRD root
 
-Target and search paths resolve in this order:
+Target and search paths resolve in this order: explicit PRD root, `business-requirements/`, `prd/`, then workspace root following existing folder conventions. `UPDATE` retains supplied existing target after normalization; pipeline never substitutes a different path.
 
-1. Explicit PRD root from the request or Plan Document.
-2. `business-requirements/`.
-3. `prd/`.
-4. Workspace root, following existing folder conventions.
+### Metadata, references, and updates
 
-### Metadata and references
+Every generated document starts with `clickup-page` YAML metadata. Agents leave it empty when no ClickUp page exists. Cross-document references use source `clickup-page` URL when present, otherwise exact filename. Every document has `Version`, `Date`, and `Changes` table. Updates edit existing row unless user explicitly requests new version row.
 
-Every generated document starts with:
+### Functional design boundary
 
-```yaml
----
-clickup-page:
----
-```
-
-Agents leave `clickup-page` empty when no ClickUp page exists and never fabricate URLs. Cross-document references use the source document's `clickup-page` URL when present; the exact filename is the fallback.
-
-### Updates and version history
-
-Every document includes a three-column `Version`, `Date`, and `Changes` table. For an update, the default behavior is to edit the existing version row in place. A new version row is added only when the user explicitly asks for one.
-
-### Figma boundary
-
-`prd-figma-reader` is read-only. It extracts exact labels, element types, states, statuses, behavior, validation hints, visibility, navigation, and literal content. It does not report colors, fonts, dimensions, spacing, alignment, shadows, styling, or asset filenames, and it does not call Figma write, comment, annotation, FigJam edit, or Slides edit tools.
-
-### Diagrams and visual details
-
-Agent-authored diagrams use ASCII inside plain `text` code blocks unless the user explicitly requests Mermaid. Requirements describe functional state and behavior rather than appearance or implementation details.
-
-## Pipeline signals
-
-| Signal | Meaning | Next action |
-|---|---|---|
-| `ROLES_FILE_NOT_FOUND` | Canonical roles file is missing or unreadable | Add or identify `roles-permissions.md`, then rerun |
-| `RISK_ITEMS_FOUND` | One or more requested roles do not resolve | Correct roles or explicitly accept unresolved-role markers |
-| `FIGMA_READ_FAILURE` | Figma MCP call failed, timed out, or returned empty data | Verify MCP availability and Figma access, then retry |
-| `CHECKLIST_PASSED` | Final QA found no blocking checklist issue | Complete, or perform one requested consolidation pass and recheck |
-| `CHECKLIST_FAILED` | Final QA found one or more issues | Send findings to the applicable author and rerun QA within retry budget |
-
-The consistency checker always reports findings; it never edits the target document.
-
-## Authoring guarantees
-
-The shared standards and final checker enforce these requirements:
-
-- Canonical roles come from the workspace roles file rather than invention.
-- URLs and design links come from source material rather than placeholders.
-- Requirements use direct, active, testable language and avoid vague quality adjectives.
-- Use-case business rules are grouped by functional area or state and cover happy, edge, and error paths.
-- Notification and email variables each have `Variable`, `Source`, `Example`, `Fallback`, and `Validation` values.
-- Static notification and email content preserves exact source wording.
-- Functional requirements exclude colors, fonts, spacing, layout, and styling.
-- Authoring is not complete until `prd-consistency-checker` has run and its findings are resolved.
+`prd-figma-reader` is read-only. It records functional labels, element types, states, statuses, behavior, validation hints, visibility, navigation, literal content, source URL, node ID, screens analysed, and unresolved ambiguities. It does not report appearance or call Figma write, comment, annotation, FigJam edit, or Slides edit tools. Agent-authored diagrams use ASCII in plain `text` code blocks unless user asks for Mermaid.
 
 ## Development and validation
 
-Keep agent names unique, preserve YAML frontmatter, and maintain the orchestrator's stage contracts when editing definitions. Read-only agents should not gain write tools without a concrete workflow need. Author agents require `Write` and `Edit` because they create or update target requirements files.
+Keep agent names unique, preserve YAML frontmatter, and keep `prd-pipeline` contract aligned with specialist prompts. `prd-orchestrator` must name all worker agents and direct full runs to pipeline. Read-only agents must not gain write tools without concrete need. Author agents need `Write` and `Edit` for target requirement files.
 
-Run this dependency-free static check from the repository root:
+Run commands from repository root.
+
+```bash
+python3 -m unittest discover -s skills/prd-pipeline/tests -p 'test_*.py' -v
+python3 skills/prd-pipeline/scripts/validate-prd-pipeline.py package --skill-root skills/prd-pipeline
+python3 skills/prd-pipeline/scripts/validate-prd-pipeline.py run --run-dir /absolute/path/to/run --repository-root /absolute/path/to/workspace
+python3 -m py_compile skills/prd-pipeline/scripts/validate-prd-pipeline.py skills/prd-pipeline/tests/test_validate_prd_pipeline.py
+git diff --check
+```
+
+The run validator receives `--repository-root` so it can reject accidental run artifacts inside target repository. Use an artifact directory outside that root.
+
+Run inventory check after definition changes.
 
 ```bash
 python3 - <<'PY'
@@ -220,37 +197,29 @@ expected = {
 
 files = sorted(Path("agents").glob("prd-*.md"))
 assert len(files) == 8, f"expected 8 PRD agents, found {len(files)}"
-
 names = set()
 for path in files:
-    text = path.read_text()
-    match = re.search(r"^name:\s*([^\s]+)\s*$", text, re.MULTILINE)
+    match = re.search(r"^name:\s*([^\s]+)\s*$", path.read_text(), re.MULTILINE)
     assert match, f"missing name in {path}"
     names.add(match.group(1))
-
 assert names == expected, f"agent mismatch: {sorted(names ^ expected)}"
 assert Path("prd-shared-authoring-standards.md").is_file()
-
+for path in (
+    Path("skills/prd-pipeline/SKILL.md"),
+    Path("skills/prd-pipeline/references/prd-pipeline-contract.md"),
+    Path("skills/prd-pipeline/references/prd-artifact-format.md"),
+    Path("skills/prd-pipeline/scripts/validate-prd-pipeline.py"),
+    Path("skills/prd-pipeline/tests/test_validate_prd_pipeline.py"),
+):
+    assert path.is_file(), f"missing pipeline file: {path}"
 orchestrator = Path("agents/prd-orchestrator.md").read_text()
 for name in expected - {"prd-orchestrator"}:
     assert f"`{name}`" in orchestrator, f"orchestrator does not reference {name}"
-
-print("validated 8 PRD agents, shared standards, and orchestrator references")
+assert "`prd-pipeline` is the executable coordinator" in orchestrator
+print("validated 8 PRD agents, pipeline package, shared standards, and orchestrator references")
 PY
-
-git diff --check
 ```
-
-The repository does not currently include an automated test suite. The validation above checks inventory and orchestration references; review prompt behavior and tool boundaries manually when changing workflow semantics.
 
 ## Privacy and repository scope
 
-The root `.gitignore` denies all files by default and includes only `.gitignore`, `agents/prd-*.md`, `prd-shared-authoring-standards.md`, and this README. Keep local Claude Code settings, tokens, MCP credentials, histories, caches, sessions, and generated requirements documents out of version control.
-
-<!-- Verification Report
-- Agent definitions: 8/8 parsed
-- Orchestrator references: verified against source
-- Installation steps: executed in an isolated temporary HOME
-- Documented paths and signals: verified against tracked files
-- Generated: 2026-08-13
--->
+Root `.gitignore` denies all files by default and includes only tracked agent sources, `skills/prd-pipeline/`, shared standards, and README. Keep local Claude Code settings, tokens, MCP credentials, histories, caches, sessions, generated requirements, and run artifacts out of version control.
