@@ -36,6 +36,14 @@ ARTIFACT_REQUIRED_TERMS = {
     "Early terminal layout",
 }
 
+PACKAGE_VALIDATOR_STUB = (
+    "from __future__ import annotations\n"
+    "\n"
+    "\n"
+    "def main() -> int:\n"
+    "    return 0\n"
+)
+
 SKILL_PATH = Path(__file__).parents[1] / "SKILL.md"
 SKILL_REQUIRED_FRONTMATTER = {
     "name: prd-pipeline",
@@ -178,6 +186,18 @@ class ReadmeContractTests(unittest.TestCase):
     def test_readme_removes_obsolete_manual_orchestration_guidance(self) -> None:
         readme_text = README_PATH.read_text(encoding="utf-8")
         self.assertNotIn("Until its tool allowlist includes Agent", readme_text)
+        for obsolete in (
+            "main Claude Code conversation",
+            "main conversation",
+            "manually coordinate",
+        ):
+            with self.subTest(obsolete=obsolete):
+                self.assertNotIn(obsolete, readme_text)
+
+    def test_readme_states_canonical_pipeline_routing_sentence(self) -> None:
+        readme_text = README_PATH.read_text(encoding="utf-8")
+        self.assertIn("`prd-pipeline` is sole executable entry point for full end-to-end runs.", readme_text)
+        self.assertIn("Full runs use `/prd-pipeline`", readme_text)
 
 
 class PackageValidationTests(unittest.TestCase):
@@ -210,7 +230,7 @@ class PackageValidationTests(unittest.TestCase):
         )
         (root / "references" / "prd-pipeline-contract.md").write_text(" ".join(CONTRACT_REQUIRED_TERMS), encoding="utf-8")
         (root / "references" / "prd-artifact-format.md").write_text(" ".join(ARTIFACT_REQUIRED_TERMS), encoding="utf-8")
-        (root / "scripts" / "validate-prd-pipeline.py").write_text("validator", encoding="utf-8")
+        (root / "scripts" / "validate-prd-pipeline.py").write_text(PACKAGE_VALIDATOR_STUB, encoding="utf-8")
         (root / "tests" / "test_validate_prd_pipeline.py").write_text("tests", encoding="utf-8")
         return root
 
@@ -231,6 +251,9 @@ class PackageValidationTests(unittest.TestCase):
     def test_complete_package_passes(self) -> None:
         root = self.make_complete_skill_root()
         self.assertEqual(validator.validate_package(root), [])
+
+    def test_package_validator_fixture_is_parseable_python(self) -> None:
+        compile(PACKAGE_VALIDATOR_STUB, "validate-prd-pipeline.py", "exec")
 
     def test_package_rejects_contract_missing_required_term(self) -> None:
         root = self.make_complete_skill_root()
@@ -556,6 +579,10 @@ class RunValidationTests(unittest.TestCase):
                 self.make_early_terminal_run(directory, phase=phase, error_code=error_code, status=status)
                 self.assertEqual(validator.validate_run(self.run_dir), [])
                 self.run_dir = Path(self.temp_dir.name) / f"run-{directory}"
+
+    def test_author_document_not_found_terminal_run_validates(self) -> None:
+        self.make_early_terminal_run("04-author", phase="AUTHOR", error_code="DOCUMENT_NOT_FOUND", status="FAILED")
+        self.assertEqual(validator.validate_run(self.run_dir), [])
 
     def test_early_terminal_failure_rejects_missing_prefix_phase(self) -> None:
         self.make_early_terminal_run("03-figma", phase="FIGMA", error_code="FIGMA_READ_FAILURE")
@@ -901,6 +928,21 @@ class RunValidationTests(unittest.TestCase):
         self.update_manifest("04-author", target_path="relative/target.md")
         self.assert_error_code("relative_target_path")
 
+    def test_cross_phase_binding_rejects_target_path_drift(self) -> None:
+        self.make_successful_run()
+        self.update_manifest("04-author", target_path="/workspace/prd/other-target.md")
+        self.assert_error_code("cross_phase_mismatch")
+
+    def test_cross_phase_binding_rejects_document_type_drift(self) -> None:
+        self.make_successful_run()
+        self.update_manifest("04-author", document_type="Notification")
+        self.assert_error_code("cross_phase_mismatch")
+
+    def test_cross_phase_binding_rejects_run_id_drift(self) -> None:
+        self.make_successful_run()
+        self.update_manifest("04-author", run_id="other-run")
+        self.assert_error_code("cross_phase_mismatch")
+
     def test_skipped_figma_without_content_is_rejected(self) -> None:
         self.make_successful_run()
         (self.run_dir / "03-figma" / "content.md").unlink()
@@ -964,10 +1006,27 @@ class RunValidationTests(unittest.TestCase):
                 self.assert_error_code("invalid_target_path")
                 self.run_dir = Path(self.temp_dir.name) / f"run-{len(list(Path(self.temp_dir.name).iterdir()))}"
 
-    def test_empty_string_target_path_is_allowed(self) -> None:
+    def test_empty_string_target_path_is_allowed_only_for_load(self) -> None:
         self.make_successful_run()
-        self.update_manifest("04-author", target_path="")
+        self.update_manifest("00-load", target_path="")
         self.assertEqual(validator.validate_run(self.run_dir), [])
+
+    def test_empty_string_target_path_is_rejected_from_plan_onward(self) -> None:
+        phase_directories = (
+            "01-plan",
+            "02-context",
+            "03-figma",
+            "04-author",
+            "05-qa-attempt-1",
+            "06-repair-skipped",
+            "07-summary",
+        )
+        for directory in phase_directories:
+            with self.subTest(directory=directory):
+                self.make_successful_run()
+                self.update_manifest(directory, target_path="")
+                self.assert_error_code("missing_target_path")
+                self.run_dir = Path(self.temp_dir.name) / f"run-empty-target-{directory}"
 
     def test_unknown_status_is_rejected(self) -> None:
         self.make_successful_run()

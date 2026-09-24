@@ -121,8 +121,11 @@ EARLY_TERMINAL_RULES = {
     "PLAN": ("BLOCKED", {"PLAN_INCOMPLETE"}),
     "CONTEXT": ("BLOCKED", {"ROLES_FILE_NOT_FOUND", "RISK_ITEMS_FOUND"}),
     "FIGMA": ("FAILED", {"FIGMA_READ_FAILURE"}),
-    "AUTHOR": ("FAILED", {"AUTHOR_INPUT_INVALID", "AUTHOR_WRITE_FAILURE"}),
+    "AUTHOR": ("FAILED", {"AUTHOR_INPUT_INVALID", "AUTHOR_WRITE_FAILURE", "DOCUMENT_NOT_FOUND"}),
 }
+
+CROSS_PHASE_SCOPES = {"PLAN", "CONTEXT", "FIGMA", "AUTHOR", "QA", "REPAIR", "REPORT"}
+CROSS_PHASE_FIELDS = ("target_path", "document_type", "mode")
 
 QA_DIRECTORY_PATTERN = re.compile(r"05-qa-attempt-([1-9]\d*)")
 REPAIR_DIRECTORY_PATTERN = re.compile(r"06-repair-attempt-([1-9]\d*)")
@@ -302,9 +305,13 @@ def _validate_manifest(
     elif Path(artifact_dir).resolve() != run_dir:
         errors.append(_error(path, "artifact_dir_mismatch", "artifact_dir must equal resolved run directory"))
     target_path = manifest.get("target_path")
+    resolved_phase = _canonical_phase_name(phase_dir.name, manifest)
     if not isinstance(target_path, str):
         errors.append(_error(path, "invalid_target_path", "target_path must be a string or empty"))
-    elif target_path and not Path(target_path).is_absolute():
+    elif not target_path:
+        if resolved_phase not in (None, "LOAD"):
+            errors.append(_error(path, "missing_target_path", "target_path must be a non-empty absolute path from PLAN onward"))
+    elif not Path(target_path).is_absolute():
         errors.append(_error(path, "relative_target_path", "target_path must be absolute"))
 
     retry_count = manifest.get("retry_count")
@@ -357,6 +364,46 @@ def _canonical_phase_binding(name: str) -> tuple[str, int] | None:
     if REPAIR_DIRECTORY_PATTERN.fullmatch(name):
         return ("REPAIR", 6)
     return None
+
+
+def _canonical_phase_name(directory: str, manifest: dict[str, Any]) -> str | None:
+    """Resolve the canonical phase for a directory, falling back to its declared phase."""
+    binding = _canonical_phase_binding(directory)
+    if binding is not None:
+        return binding[0]
+    declared = manifest.get("phase")
+    return declared if isinstance(declared, str) else None
+
+
+def _validate_run_wide_binding(
+    run_dir: Path,
+    manifests: dict[str, dict[str, Any]],
+    errors: list[ValidationError],
+) -> None:
+    """Require one run_id and equal target, type, and mode across every post-LOAD phase."""
+    if not manifests:
+        return
+    run_ids = [manifest.get("run_id") for manifest in manifests.values()]
+    if any(run_id != run_ids[0] for run_id in run_ids[1:]) or not isinstance(run_ids[0], str) or not run_ids[0]:
+        errors.append(_error(run_dir, "cross_phase_mismatch", "run_id must be one non-empty run-wide value across all phases"))
+    scoped = [
+        manifest
+        for directory, manifest in manifests.items()
+        if _canonical_phase_name(directory, manifest) in CROSS_PHASE_SCOPES
+    ]
+    if not scoped:
+        return
+    for field in CROSS_PHASE_FIELDS:
+        values = [manifest.get(field) for manifest in scoped]
+        first = values[0]
+        if any(value != first for value in values[1:]) or not isinstance(first, str) or not first:
+            errors.append(
+                _error(
+                    run_dir,
+                    "cross_phase_mismatch",
+                    f"{field} must be one non-empty value across PLAN through REPORT phases",
+                )
+            )
 
 
 def _validate_phase_directories(
@@ -641,6 +688,7 @@ def validate_run(run_dir: Path, repository_root: Path | None = None) -> list[Val
         if phase_dir.name == "06-repair-skipped" and manifest.get("status") == "SKIPPED" and not body:
             errors.append(_error(content_path, "missing_skipped_repair_reason", "skipped repair content requires a non-empty reason"))
     _validate_phase_directories(resolved_run_dir, phase_dirs, manifests, errors)
+    _validate_run_wide_binding(resolved_run_dir, manifests, errors)
     reaches_qa = _validate_base_phase_topology(resolved_run_dir, phase_names, manifests, errors)
     if reaches_qa:
         _validate_qa_repair_sequence(resolved_run_dir, manifests, errors)
