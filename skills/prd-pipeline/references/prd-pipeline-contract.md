@@ -80,6 +80,8 @@ Checker result is mutually exclusive. It must report exactly one primary verdict
 
 Do not combine `CHECKLIST_PASSED` with `CHECKLIST_FAILED`, or a blocking error with a successful terminal status.
 
+QA-stage VALIDATION_FAILED: QA manifest status FAILED, error_code VALIDATION_FAILED, terminal false, next_agent STOP; 07-summary status FAILED, error_code VALIDATION_FAILED, terminal true, next_agent STOP. Pipeline is terminal through 07-summary, not QA manifest. REPORT-stage VALIDATION_FAILED shape remains unchanged.
+
 ## Terminal responses
 
 Successful final response:

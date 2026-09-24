@@ -430,6 +430,21 @@ class SpecialistAgentContractTests(unittest.TestCase):
         self.assertIn("instruct the caller to re-invoke with explicit approval", text)
         self.assertNotIn("ask user only whether to approve", text)
 
+    def test_qa_validation_failed_artifact_shape_matches_across_contract_surfaces(self) -> None:
+        expected = (
+            "QA-stage VALIDATION_FAILED: QA manifest status FAILED, error_code VALIDATION_FAILED, "
+            "terminal false, next_agent STOP; 07-summary status FAILED, error_code VALIDATION_FAILED, "
+            "terminal true, next_agent STOP. Pipeline is terminal through 07-summary, not QA manifest. "
+            "REPORT-stage VALIDATION_FAILED shape remains unchanged."
+        )
+        for label, path in (
+            ("SKILL", SKILL_PATH),
+            ("contract", CONTRACT_PATH),
+            ("README", README_PATH),
+        ):
+            with self.subTest(document=label):
+                self.assertIn(expected, path.read_text(encoding="utf-8"))
+
     def test_skill_contract_and_readme_share_one_phase_six_rule(self) -> None:
         skill_text = SKILL_PATH.read_text(encoding="utf-8")
         contract_text = CONTRACT_PATH.read_text(encoding="utf-8")
@@ -1072,6 +1087,7 @@ class RunValidationTests(unittest.TestCase):
             status="FAILED",
             error_code="VALIDATION_FAILED",
             qa_verdict="NOT_RUN",
+            terminal=False,
             next_agent="STOP",
         )
         self.update_manifest(
@@ -1079,6 +1095,8 @@ class RunValidationTests(unittest.TestCase):
             status="FAILED",
             error_code="VALIDATION_FAILED",
             qa_verdict="NOT_RUN",
+            terminal=True,
+            next_agent="STOP",
         )
         return self.run_dir
 
@@ -1089,6 +1107,16 @@ class RunValidationTests(unittest.TestCase):
     def test_qa_validation_failure_requires_stop_summary(self) -> None:
         self.make_qa_validation_failure_run()
         self.update_manifest("07-summary", next_agent="prd-pipeline")
+        self.assert_error_code("invalid_failed_terminal_topology")
+
+    def test_qa_validation_failure_requires_nonterminal_qa_manifest(self) -> None:
+        self.make_qa_validation_failure_run()
+        self.update_manifest("05-qa-attempt-1", terminal=True)
+        self.assert_error_code("invalid_failed_terminal_topology")
+
+    def test_qa_validation_failure_requires_failed_qa_manifest(self) -> None:
+        self.make_qa_validation_failure_run()
+        self.update_manifest("05-qa-attempt-1", status="SUCCESS")
         self.assert_error_code("invalid_failed_terminal_topology")
 
     def test_qa_validation_failure_with_phase_six_pair_is_rejected(self) -> None:

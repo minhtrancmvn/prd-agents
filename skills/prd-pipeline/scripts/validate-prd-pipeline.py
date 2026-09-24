@@ -690,6 +690,7 @@ def _validate_qa_repair_sequence(
             final_qa.get("status") == "FAILED"
             and final_qa.get("error_code") == "VALIDATION_FAILED"
             and final_qa.get("terminal") is False
+            and final_qa.get("next_agent") == "STOP"
             and not repair_numbers
             and not has_skipped
             and not has_consolidation
@@ -704,7 +705,7 @@ def _validate_qa_repair_sequence(
                 _error(
                     run_dir / "07-summary" / "manifest.json",
                     "invalid_failed_terminal_topology",
-                    "report validation failure requires passing non-terminal final QA or a Phase-6-free QA validation failure, and a terminal STOP summary",
+                    "report validation failure requires passing non-terminal final QA or a Phase-6-free failed non-terminal STOP QA validation failure, and a terminal STOP summary",
                 )
             )
     elif summary is not None and clean_final_qa:

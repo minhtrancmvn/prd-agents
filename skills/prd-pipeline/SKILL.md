@@ -269,8 +269,10 @@ CHECKLIST_FAILED -> QA manifest SUCCESS, qa_verdict CHECKLIST_FAILED, error_code
 ROLES_FILE_NOT_FOUND -> terminal BLOCKED, error_code ROLES_FILE_NOT_FOUND, next_agent STOP
 INPUT_INVALID -> terminal FAILED, error_code INPUT_INVALID, next_agent STOP
 DOCUMENT_NOT_FOUND -> terminal FAILED, error_code DOCUMENT_NOT_FOUND, next_agent STOP
-anything else -> terminal FAILED, error_code VALIDATION_FAILED, next_agent STOP
+anything else -> QA manifest FAILED, error_code VALIDATION_FAILED, terminal false, next_agent STOP
 ```
+
+QA-stage VALIDATION_FAILED: QA manifest status FAILED, error_code VALIDATION_FAILED, terminal false, next_agent STOP; 07-summary status FAILED, error_code VALIDATION_FAILED, terminal true, next_agent STOP. Pipeline is terminal through 07-summary, not QA manifest. REPORT-stage VALIDATION_FAILED shape remains unchanged.
 
 If `CHECKLIST_FAILED` has exhausted normal budget, terminal `FAILED` with `QA_RETRY_EXHAUSTED`; otherwise create repair artifact. Unsupported, mixed, agent-error, empty, or malformed output is terminal `FAILED` with `VALIDATION_FAILED`. Never combine a checklist verdict with blocking error.
 

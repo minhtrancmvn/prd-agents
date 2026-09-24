@@ -138,7 +138,7 @@ Successful terminal response has `PRD_PIPELINE_COMPLETE`, absolute target path, 
 | `VALIDATION_FAILED` | Package or run-artifact validation failed, or worker/checker output was unsupported, mixed, empty, malformed, or an agent error | Repair reported artifact or contract issue; correct worker/checker input or availability; then start a new run or rerun validation as applicable |
 | `CHECKLIST_PASSED` | QA found no blocking checklist issue | Pipeline validates run and reports completion |
 
-`CHECKLIST_PASSED` and `CHECKLIST_FAILED` are mutually exclusive QA outcomes. Pipeline does not claim success until final checker verdict passes and run validator succeeds.
+`CHECKLIST_PASSED` and `CHECKLIST_FAILED` are mutually exclusive QA outcomes. QA-stage VALIDATION_FAILED: QA manifest status FAILED, error_code VALIDATION_FAILED, terminal false, next_agent STOP; 07-summary status FAILED, error_code VALIDATION_FAILED, terminal true, next_agent STOP. Pipeline is terminal through 07-summary, not QA manifest. REPORT-stage VALIDATION_FAILED shape remains unchanged. Pipeline does not claim success until final checker verdict passes and run validator succeeds.
 
 ### Retry budgets
 
