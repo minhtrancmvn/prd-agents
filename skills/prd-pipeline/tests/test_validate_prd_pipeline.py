@@ -172,7 +172,24 @@ class RunValidationTests(unittest.TestCase):
             "artifacts": [{"path": "content.md", "type": "content"}],
         }
         (phase_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-        (phase_dir / "content.md").write_text(f"STATUS: {status}\n", encoding="utf-8")
+        handoff = "\n".join(
+            (
+                f"STATUS: {status}",
+                "AGENT: prd-pipeline",
+                f"PHASE: {phase}",
+                f"DOCUMENT_TYPE: {document_type}",
+                f"MODE: {mode}",
+                f"TARGET_PATH: {target_path}",
+                f"ARTIFACT_DIR: {run_dir.resolve()}",
+                "COMPLETED_CHECKS: fixture check",
+                "UNRESOLVED_ITEMS: NONE",
+                f"NEXT_AGENT: {'prd-next-agent' if not directory.startswith('07-') else 'STOP'}",
+                f"ERROR_CODE: {error_code}",
+                f"ERROR_DETAILS: {'NONE' if error_code == 'NONE' else 'fixture failure'}",
+            )
+        )
+        body = "No Figma links supplied." if directory == "03-figma" and status == "SKIPPED" else "Worker output."
+        (phase_dir / "content.md").write_text(f"{handoff}\n\n{body}\n", encoding="utf-8")
 
     def make_successful_run(
         self,
@@ -214,10 +231,37 @@ class RunValidationTests(unittest.TestCase):
     def update_manifest(self, directory: str, **updates: object) -> None:
         manifest = self.read_manifest(directory)
         manifest.update(updates)
-        (self.run_dir / directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        phase_dir = self.run_dir / directory
+        (phase_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        content_path = phase_dir / "content.md"
+        content_lines = content_path.read_text(encoding="utf-8").splitlines()
+        handoff_keys = {
+            "status": "STATUS",
+            "agent": "AGENT",
+            "phase": "PHASE",
+            "document_type": "DOCUMENT_TYPE",
+            "mode": "MODE",
+            "target_path": "TARGET_PATH",
+            "artifact_dir": "ARTIFACT_DIR",
+            "completed_checks": "COMPLETED_CHECKS",
+            "unresolved_items": "UNRESOLVED_ITEMS",
+            "next_agent": "NEXT_AGENT",
+            "error_code": "ERROR_CODE",
+            "error_details": "ERROR_DETAILS",
+        }
+        for manifest_key, field in handoff_keys.items():
+            if manifest_key not in updates:
+                continue
+            value = manifest[manifest_key]
+            rendered = ";".join(str(item) for item in value) if isinstance(value, list) and value else ("NONE" if isinstance(value, list) else str(value))
+            content_lines = [f"{field}: {rendered}" if line.startswith(f"{field}:") else line for line in content_lines]
+        content_path.write_text("\n".join(content_lines) + "\n", encoding="utf-8")
 
-    def assert_error_code(self, code: str) -> None:
-        errors = validator.validate_run(self.run_dir)
+    def update_content(self, directory: str, content: str) -> None:
+        (self.run_dir / directory / "content.md").write_text(content, encoding="utf-8")
+
+    def assert_error_code(self, code: str, repository_root: Path | None = None) -> None:
+        errors = validator.validate_run(self.run_dir, repository_root)
         self.assertIn(code, {error.code for error in errors})
 
     def test_successful_use_case_create_passes(self) -> None:
@@ -252,6 +296,56 @@ class RunValidationTests(unittest.TestCase):
         self.make_successful_run()
         (self.run_dir / "03-figma" / "content.md").unlink()
         self.assert_error_code("missing_content")
+
+    def test_skipped_figma_requires_nonempty_reason(self) -> None:
+        self.make_successful_run()
+        content = (self.run_dir / "03-figma" / "content.md").read_text(encoding="utf-8")
+        self.update_content("03-figma", content.split("\n\n", 1)[0] + "\n\n")
+        self.assert_error_code("missing_skipped_figma_reason")
+
+    def test_missing_base_phase_is_rejected(self) -> None:
+        self.make_successful_run()
+        (self.run_dir / "02-context").rename(self.run_dir / "02-context-removed")
+        self.assert_error_code("missing_phase")
+
+    def test_handoff_missing_field_is_rejected(self) -> None:
+        self.make_successful_run()
+        content = (self.run_dir / "01-plan" / "content.md").read_text(encoding="utf-8")
+        self.update_content("01-plan", "\n".join(content.splitlines()[:11]))
+        self.assert_error_code("missing_handoff_field")
+
+    def test_handoff_manifest_mismatch_is_rejected(self) -> None:
+        self.make_successful_run()
+        content = (self.run_dir / "01-plan" / "content.md").read_text(encoding="utf-8")
+        self.update_content("01-plan", content.replace("PHASE: PLAN", "PHASE: LOAD", 1))
+        self.assert_error_code("handoff_mismatch")
+
+    def test_artifact_dir_mismatch_is_rejected(self) -> None:
+        self.make_successful_run()
+        self.update_manifest("01-plan", artifact_dir="/tmp/other-run")
+        self.assert_error_code("artifact_dir_mismatch")
+
+    def test_run_inside_repository_is_rejected(self) -> None:
+        self.make_successful_run()
+        self.assert_error_code("run_dir_inside_repository", self.run_dir.parent)
+
+    def test_cli_accepts_repository_root_flag(self) -> None:
+        self.make_successful_run()
+        self.assertEqual(
+            validator.main([
+                "run",
+                "--run-dir",
+                str(self.run_dir),
+                "--repository-root",
+                str(self.run_dir.parent),
+            ]),
+            1,
+        )
+
+    def test_duplicate_content_artifact_is_rejected(self) -> None:
+        self.make_successful_run()
+        self.update_manifest("01-plan", artifacts=[{"path": "content.md", "type": "content"}, {"path": "content.md", "type": "content"}])
+        self.assert_error_code("invalid_content_artifact")
 
     def test_non_string_falsy_target_path_is_rejected(self) -> None:
         for value in (None, False, 0, [], {}):
@@ -297,6 +391,23 @@ class RunValidationTests(unittest.TestCase):
         self.make_successful_run()
         self.update_manifest("07-summary", consolidation_attempts=2)
         self.assert_error_code("consolidation_attempts_exceeded")
+
+    def test_negative_and_boolean_retry_values_are_rejected(self) -> None:
+        expected_codes = {
+            "retry_count": "invalid_retry_count",
+            "retry_limit": "invalid_retry_limit",
+            "consolidation_attempts": "invalid_consolidation_attempts",
+        }
+        for field in ("retry_count", "retry_limit", "consolidation_attempts"):
+            for value in (-1, True):
+                with self.subTest(field=field, value=value):
+                    self.make_successful_run()
+                    self.update_manifest("01-plan", **{field: value})
+                    self.assert_error_code(expected_codes[field])
+                    self.run_dir = Path(self.temp_dir.name) / f"run-invalid-{field}-{value}"
+
+    def test_document_not_found_blocked_run_is_valid_terminal_state(self) -> None:
+        self.assert_valid_terminal_failure("DOCUMENT_NOT_FOUND")
 
     def test_terminal_success_requires_checklist_passed(self) -> None:
         self.make_successful_run()
