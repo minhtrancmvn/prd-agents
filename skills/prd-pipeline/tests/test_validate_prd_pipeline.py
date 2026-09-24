@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -211,10 +212,36 @@ class SpecialistAgentContractTests(unittest.TestCase):
 
     def test_checker_declares_exclusive_first_line_statuses(self) -> None:
         text = CHECKER_PATH.read_text(encoding="utf-8")
-        self.assertIn("exactly one", text)
-        for status in CHECKER_FIRST_LINE_STATUSES:
+        match = re.search(
+            r"First line must be exactly one of:\n\n```text\n(?P<statuses>[^`]+)```",
+            text,
+        )
+        self.assertIsNotNone(match, "missing checker first-line status fence")
+        assert match is not None
+        self.assertEqual(set(match.group("statuses").splitlines()), CHECKER_FIRST_LINE_STATUSES)
+        self.assertIn(
+            "Exactly one status appears as first line, with no preceding text.",
+            text,
+        )
+
+    def test_pipeline_accepts_and_maps_all_checker_statuses(self) -> None:
+        text = SKILL_PATH.read_text(encoding="utf-8")
+        match = re.search(
+            r"Require trimmed first line to equal exactly one documented status and full non-empty body:\n\n```text\n(?P<statuses>[^`]+)```",
+            text,
+        )
+        self.assertIsNotNone(match, "missing pipeline checker-status fence")
+        assert match is not None
+        self.assertEqual(set(match.group("statuses").splitlines()), CHECKER_FIRST_LINE_STATUSES)
+        for status, mapping in {
+            "CHECKLIST_PASSED": "QA manifest SUCCESS, qa_verdict CHECKLIST_PASSED, error_code NONE",
+            "CHECKLIST_FAILED": "QA manifest SUCCESS, qa_verdict CHECKLIST_FAILED, error_code CHECKLIST_FAILED",
+            "ROLES_FILE_NOT_FOUND": "terminal BLOCKED, error_code ROLES_FILE_NOT_FOUND, next_agent STOP",
+            "INPUT_INVALID": "terminal FAILED, error_code INPUT_INVALID, next_agent STOP",
+            "DOCUMENT_NOT_FOUND": "terminal FAILED, error_code DOCUMENT_NOT_FOUND, next_agent STOP",
+        }.items():
             with self.subTest(status=status):
-                self.assertIn(status, text)
+                self.assertIn(f"{status} -> {mapping}", text)
 
 
 class RunValidationTests(unittest.TestCase):

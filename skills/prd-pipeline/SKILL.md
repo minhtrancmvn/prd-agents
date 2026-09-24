@@ -245,15 +245,17 @@ Email Template -> prd-email-req-author
 
 1. Preflight checker inputs before dispatch: target path must be absolute and readable with `Read`; document type must be exact; workspace root must exist; Context Report role source state must be available. Preflight failure is terminal `INPUT_INVALID` or `DOCUMENT_NOT_FOUND`; do not call checker.
 2. Create `05-qa-attempt-N` artifacts before dispatch. Persist target path, document type, absolute workspace root, Figma analysis or skip, Context Report role evidence, `clickup_verification_status: NOT_CHECKED|VERIFIED`, exact external ClickUp verification evidence or `NONE`, retry state, and author artifact path. Without authorized evidence, require checker to perform URL syntax-only checks and report live ClickUp validity as `NOT_CHECKED`; never infer it.
-3. Dispatch `prd-consistency-checker` read-only. Current checker interface is preflighted because Task 4 will align its statuses. Require trimmed first line to equal exactly one documented current status and full non-empty body:
+3. Dispatch `prd-consistency-checker` read-only. Require trimmed first line to equal exactly one documented status and full non-empty body:
 
 ```text
 CHECKLIST_PASSED
 CHECKLIST_FAILED
+INPUT_INVALID
+DOCUMENT_NOT_FOUND
 ROLES_FILE_NOT_FOUND
 ```
 
-4. Parse whole trimmed first line, not first token. Map `ROLES_FILE_NOT_FOUND` immediately to terminal `BLOCKED`. Reject every other unsupported/mixed/future status as `VALIDATION_FAILED` until Task 4 changes checker contract. Preserve full checker body in content artifact and normalize findings.
+4. Parse whole trimmed first line, not first token. Map each documented status by exclusive state machine. Reject every unsupported or mixed status as `VALIDATION_FAILED`. Preserve full checker body in content artifact and normalize findings.
 
 **Artifact:** `05-qa-attempt-N/manifest.json` and `05-qa-attempt-N/content.md` with `qa_verdict`, all checker findings, current retry count/limit, consolidation count, and explicit ClickUp verification status/evidence.
 
@@ -265,12 +267,12 @@ ROLES_FILE_NOT_FOUND
 CHECKLIST_PASSED -> QA manifest SUCCESS, qa_verdict CHECKLIST_PASSED, error_code NONE; continue to canonical Phase 6 skipped pair or optional consolidation
 CHECKLIST_FAILED -> QA manifest SUCCESS, qa_verdict CHECKLIST_FAILED, error_code CHECKLIST_FAILED, terminal false, next_agent selected author; repair if retry_count < retry_limit
 ROLES_FILE_NOT_FOUND -> terminal BLOCKED, error_code ROLES_FILE_NOT_FOUND, next_agent STOP
-INPUT_INVALID -> terminal FAILED when Task 4 checker interface supports it
-DOCUMENT_NOT_FOUND -> terminal FAILED when Task 4 checker interface supports it
-anything else -> terminal VALIDATION_FAILED
+INPUT_INVALID -> terminal FAILED, error_code INPUT_INVALID, next_agent STOP
+DOCUMENT_NOT_FOUND -> terminal FAILED, error_code DOCUMENT_NOT_FOUND, next_agent STOP
+anything else -> terminal FAILED, error_code VALIDATION_FAILED, next_agent STOP
 ```
 
-Current Task 3 checker dispatch accepts exact `CHECKLIST_*` statuses and current `ROLES_FILE_NOT_FOUND` after preflight. `INPUT_INVALID` and `DOCUMENT_NOT_FOUND` remain future five-status contract branches for Task 4. If `CHECKLIST_FAILED` has exhausted normal budget, terminal `FAILED` with `QA_RETRY_EXHAUSTED`; otherwise create repair artifact. Unsupported, mixed, agent-error, empty, or malformed output is terminal `FAILED` with `VALIDATION_FAILED`. Never combine a checklist verdict with blocking error.
+If `CHECKLIST_FAILED` has exhausted normal budget, terminal `FAILED` with `QA_RETRY_EXHAUSTED`; otherwise create repair artifact. Unsupported, mixed, agent-error, empty, or malformed output is terminal `FAILED` with `VALIDATION_FAILED`. Never combine a checklist verdict with blocking error.
 
 ### Phase 6: REPAIR AND RECHECK
 
