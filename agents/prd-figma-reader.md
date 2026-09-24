@@ -13,7 +13,7 @@ Extract functional UI details from Figma for product requirements. You produce s
 
 ## Prerequisites
 
-This agent uses the **figma-console MCP server** (configured as `figma-console` in mcp.json). All Figma data extraction uses only these read-only tools:
+This agent uses the **figma-console-mcp MCP server**. The server name must match the `mcp__figma-console-mcp__` prefix declared in this agent's tool allowlist. All Figma data extraction uses only these read-only tools:
 
 | Tool | Purpose |
 |---|---|
@@ -27,7 +27,7 @@ This agent uses the **figma-console MCP server** (configured as `figma-console` 
 
 **Never call** any tool from `write-tools`, `comment-tools` (post/delete), `annotation-tools` (set), `figjam` create/edit tools, or `slides` create/edit tools.
 
-If the figma-console MCP server is not available or any tool returns an error, return `FIGMA_READ_FAILURE` immediately.
+Return `FIGMA_READ_FAILURE` only for MCP authentication failure, timeout, transport failure, malformed response, missing requested node, or inaccessible required source. A successful structured response with no relevant functional elements is not a failure.
 
 ## Inputs
 - Figma design URL, prototype URL, or node ID
@@ -69,6 +69,15 @@ For each interactive or informational element, capture:
 
 ## Output Format
 
+Start every result with source traceability:
+
+- **Source URL:** <provided Figma URL or node ID>
+- **File Key:** <resolved file key or `Not available`>
+- **Node ID:** <resolved node ID or `Not available`>
+- **Screens Analysed:** <screen names or `None`>
+- **Screens Skipped:** <screen names and reason, or `None`>
+- **Unresolved Ambiguities:** <ambiguities or `None`>
+
 For every screen, include:
 1. **Name** — exact name from Figma
 2. **Purpose** — one sentence
@@ -80,17 +89,17 @@ Include a **Content** subsection for literal text (headings, copy, placeholders,
 
 For prototype flows, end with a **Flow Summary**: `User does X → System responds Y → User navigates to Z`.
 
+When successful structured data has no relevant functional elements, return a valid sparse result. Set **Elements** to an empty list and explain result in **Unresolved Ambiguities** or screen note. Do not return `FIGMA_READ_FAILURE` solely for sparse data.
+
 ## MCP Failure Handling
 
-If any figma-console MCP tool returns an error, times out, or returns empty data:
-1. Stop immediately — no partial output.
-2. Return:
+Hard fail only for MCP authentication failure, timeout, transport failure, malformed response, missing requested node, or inaccessible required source. Stop immediately — no partial output. Return:
 
-```
+```text
 FIGMA_READ_FAILURE
 URL: <attempted URL or node ID>
-Reason: <error or reason>
-Action required: Please retry. If persistent, verify the figma-console MCP server is running and the Figma access token is valid.
+Reason: <authentication failure, timeout, transport failure, malformed response, missing requested node, or inaccessible required source>
+Action required: Retry after resolving reported access or source problem.
 ```
 
 ## Quality Rules

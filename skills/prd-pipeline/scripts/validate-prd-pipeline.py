@@ -1,0 +1,860 @@
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+@dataclass(frozen=True)
+class ValidationError:
+    path: str
+    code: str
+    message: str
+
+
+ALLOWED_PHASE_STATUSES = {
+    "SUCCESS",
+    "SUCCESS_WITH_WARNINGS",
+    "SKIPPED",
+    "BLOCKED",
+    "FAILED",
+}
+
+ALLOWED_DOCUMENT_TYPES = {
+    "Use Case",
+    "Notification",
+    "Email Template",
+    "UNKNOWN",
+}
+
+ALLOWED_MODES = {"CREATE", "UPDATE", "UNKNOWN"}
+ALLOWED_COMPLEXITIES = {"Simple", "Complex", "UNKNOWN"}
+
+SCHEMA_VERSION = "1.0"
+CANONICAL_AGENTS = {
+    "prd-pipeline",
+    "prd-planner",
+    "prd-context-role-analyzer",
+    "prd-figma-reader",
+    "prd-author",
+    "prd-noti-req-author",
+    "prd-email-req-author",
+    "prd-consistency-checker",
+}
+CANONICAL_NEXT_AGENTS = CANONICAL_AGENTS | {"STOP"}
+TERMINAL_SUMMARY_STATUSES = {"SUCCESS", "BLOCKED", "FAILED"}
+
+ALLOWED_ERROR_CODES = {
+    "NONE",
+    "INPUT_INVALID",
+    "WORKSPACE_NOT_FOUND",
+    "PLAN_INCOMPLETE",
+    "ROLES_FILE_NOT_FOUND",
+    "RISK_ITEMS_FOUND",
+    "FIGMA_READ_FAILURE",
+    "AUTHOR_INPUT_INVALID",
+    "AUTHOR_WRITE_FAILURE",
+    "CHECKLIST_FAILED",
+    "QA_RETRY_EXHAUSTED",
+    "CONSOLIDATION_REGRESSION",
+    "VALIDATION_FAILED",
+    "DOCUMENT_NOT_FOUND",
+}
+
+CONTRACT_REQUIRED_TERMS = {
+    "STATUS:",
+    "DOCUMENT_TYPE:",
+    "MODE:",
+    "TARGET_PATH:",
+    "ERROR_CODE:",
+    "CHECKLIST_PASSED",
+    "QA_RETRY_EXHAUSTED",
+    "CONSOLIDATION_REGRESSION",
+}
+
+ARTIFACT_REQUIRED_TERMS = {
+    "manifest.json",
+    "content.md",
+    "schema_version",
+    "retry_count",
+    "consolidation_attempts",
+    "qa_verdict",
+    "07-summary",
+    "Early terminal layout",
+}
+
+REQUIRED_MANIFEST_KEYS = {
+    "schema_version",
+    "run_id",
+    "phase",
+    "phase_number",
+    "agent",
+    "status",
+    "document_type",
+    "mode",
+    "complexity",
+    "target_path",
+    "artifact_dir",
+    "completed_checks",
+    "unresolved_items",
+    "next_agent",
+    "error_code",
+    "error_details",
+    "retry_count",
+    "retry_limit",
+    "consolidation_attempts",
+    "qa_verdict",
+    "terminal",
+    "artifacts",
+}
+
+BASE_PHASES = (
+    ("00-load", "LOAD"),
+    ("01-plan", "PLAN"),
+    ("02-context", "CONTEXT"),
+    ("03-figma", "FIGMA"),
+    ("04-author", "AUTHOR"),
+)
+SUMMARY_DIRECTORY = "07-summary"
+CANONICAL_PHASE_DIRECTORIES = {
+    "00-load": ("LOAD", 0),
+    "01-plan": ("PLAN", 1),
+    "02-context": ("CONTEXT", 2),
+    "03-figma": ("FIGMA", 3),
+    "04-author": ("AUTHOR", 4),
+    "06-repair-skipped": ("REPAIR", 6),
+    "06-consolidation-attempt-1": ("REPAIR", 6),
+    "07-summary": ("REPORT", 7),
+}
+EARLY_TERMINAL_RULES = {
+    "LOAD": ("BLOCKED", {"INPUT_INVALID", "WORKSPACE_NOT_FOUND"}),
+    "PLAN": ("BLOCKED", {"PLAN_INCOMPLETE"}),
+    "CONTEXT": ("BLOCKED", {"ROLES_FILE_NOT_FOUND", "RISK_ITEMS_FOUND"}),
+    "FIGMA": ("FAILED", {"FIGMA_READ_FAILURE"}),
+    "AUTHOR": ("FAILED", {"AUTHOR_INPUT_INVALID", "AUTHOR_WRITE_FAILURE", "DOCUMENT_NOT_FOUND"}),
+}
+
+CROSS_PHASE_SCOPES = {"PLAN", "CONTEXT", "FIGMA", "AUTHOR", "QA", "REPAIR", "REPORT"}
+CROSS_PHASE_FIELDS = ("target_path", "document_type", "mode")
+
+QA_DIRECTORY_PATTERN = re.compile(r"05-qa-attempt-([1-9]\d*)")
+REPAIR_DIRECTORY_PATTERN = re.compile(r"06-repair-attempt-([1-9]\d*)")
+CONSOLIDATION_DIRECTORY = "06-consolidation-attempt-1"
+REPAIR_SKIPPED_DIRECTORY = "06-repair-skipped"
+
+BASE_PHASE_READY_STATUSES = {
+    "00-load": frozenset({"SUCCESS"}),
+    "01-plan": frozenset({"SUCCESS"}),
+    "02-context": frozenset({"SUCCESS"}),
+    "03-figma": frozenset({"SUCCESS", "SUCCESS_WITH_WARNINGS", "SKIPPED"}),
+    "04-author": frozenset({"SUCCESS"}),
+}
+
+CONTENT_BODY_DIRECTORY_PATTERNS = (
+    re.compile(r"04-author"),
+    QA_DIRECTORY_PATTERN,
+    REPAIR_DIRECTORY_PATTERN,
+    re.compile(r"06-consolidation-attempt-1"),
+    re.compile(r"07-summary"),
+)
+
+HANDOFF_FIELDS = (
+    ("STATUS", "status"),
+    ("AGENT", "agent"),
+    ("PHASE", "phase"),
+    ("DOCUMENT_TYPE", "document_type"),
+    ("MODE", "mode"),
+    ("TARGET_PATH", "target_path"),
+    ("ARTIFACT_DIR", "artifact_dir"),
+    ("COMPLETED_CHECKS", "completed_checks"),
+    ("UNRESOLVED_ITEMS", "unresolved_items"),
+    ("NEXT_AGENT", "next_agent"),
+    ("ERROR_CODE", "error_code"),
+    ("ERROR_DETAILS", "error_details"),
+)
+
+_TEMPLATE_PATTERNS = (
+    re.compile(r"<[^>]+>"),
+    re.compile(r"TBD"),
+    re.compile(r"TODO"),
+    re.compile(r"\[PLACEHOLDER\]"),
+    re.compile(r"\[INSERT\]"),
+)
+
+
+def _error(path: Path, code: str, message: str) -> ValidationError:
+    return ValidationError(str(path), code, message)
+
+
+def _sorted(errors: list[ValidationError]) -> list[ValidationError]:
+    return sorted(errors, key=lambda item: (item.path, item.code, item.message))
+
+
+def _non_empty_file(path: Path) -> bool:
+    return path.is_file() and bool(path.read_text(encoding="utf-8").strip())
+
+
+def validate_package(skill_root: Path) -> list[ValidationError]:
+    """Validate required files and structural terms in a pipeline package."""
+    errors: list[ValidationError] = []
+    required_files = {
+        "SKILL.md": "missing_skill",
+        "references/prd-pipeline-contract.md": "missing_contract",
+        "references/prd-artifact-format.md": "missing_artifact_format",
+        "scripts/validate-prd-pipeline.py": "missing_validator",
+        "tests/test_validate_prd_pipeline.py": "missing_tests",
+    }
+    for relative_path, code in required_files.items():
+        path = skill_root / relative_path
+        if not _non_empty_file(path):
+            errors.append(_error(path, code, "required non-empty file is missing"))
+
+    skill_path = skill_root / "SKILL.md"
+    if skill_path.is_file():
+        skill_text = skill_path.read_text(encoding="utf-8")
+        for term in (
+            "name: prd-pipeline",
+            "description:",
+            "version:",
+            "user-invocable: true",
+            "allowed-tools:",
+            "### Phase 0: LOAD",
+            "### Phase 1: PLAN",
+            "### Phase 2: CONTEXT AND ROLES",
+            "### Phase 3: FIGMA",
+            "### Phase 4: AUTHOR",
+            "### Phase 5: QA",
+            "### Phase 6: REPAIR AND RECHECK",
+            "### Phase 7: REPORT",
+        ):
+            if term not in skill_text:
+                errors.append(_error(skill_path, "invalid_skill", f"missing required term: {term}"))
+
+    reference_terms = {
+        "references/prd-pipeline-contract.md": ("invalid_contract", CONTRACT_REQUIRED_TERMS),
+        "references/prd-artifact-format.md": ("invalid_artifact_format", ARTIFACT_REQUIRED_TERMS),
+    }
+    for relative_path, (code, terms) in reference_terms.items():
+        path = skill_root / relative_path
+        if path.is_file():
+            reference_text = path.read_text(encoding="utf-8")
+            for term in sorted(terms):
+                if term not in reference_text:
+                    errors.append(_error(path, code, f"missing required term: {term}"))
+    return _sorted(errors)
+
+
+def _contains_template(value: Any) -> bool:
+    if isinstance(value, str):
+        return any(pattern.search(value) for pattern in _TEMPLATE_PATTERNS)
+    if isinstance(value, dict):
+        return any(_contains_template(key) or _contains_template(item) for key, item in value.items())
+    if isinstance(value, list):
+        return any(_contains_template(item) for item in value)
+    return False
+
+
+def _format_handoff_value(value: Any) -> str:
+    if isinstance(value, list):
+        return ";".join(str(item) for item in value) if value else "NONE"
+    return str(value)
+
+
+def _validate_handoff(content_path: Path, manifest: dict[str, Any], errors: list[ValidationError]) -> str:
+    if not content_path.is_file():
+        return ""
+    try:
+        content_text = content_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        errors.append(_error(content_path, "invalid_content", f"content.md must be readable UTF-8: {exc}"))
+        return ""
+    content_lines = content_text.splitlines()
+    handoff_lines = content_lines[:len(HANDOFF_FIELDS)]
+    if len(handoff_lines) < len(HANDOFF_FIELDS):
+        errors.append(_error(content_path, "missing_handoff_field", "handoff envelope must contain all required fields"))
+    for index, (field, manifest_key) in enumerate(HANDOFF_FIELDS):
+        if index >= len(handoff_lines):
+            errors.append(_error(content_path, "missing_handoff_field", f"missing handoff field: {field}"))
+            continue
+        prefix = f"{field}:"
+        line = handoff_lines[index]
+        if not line.startswith(prefix):
+            errors.append(_error(content_path, "invalid_handoff_order", f"expected handoff field {field} at line {index + 1}"))
+            continue
+        value = line[len(prefix):].strip()
+        if value != _format_handoff_value(manifest.get(manifest_key)):
+            errors.append(_error(content_path, "handoff_mismatch", f"{field} does not match manifest {manifest_key}"))
+    return "\n".join(content_lines[len(HANDOFF_FIELDS):]).strip()
+
+
+def _validate_artifacts(phase_dir: Path, manifest: dict[str, Any], errors: list[ValidationError]) -> None:
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list):
+        errors.append(_error(phase_dir / "manifest.json", "invalid_artifacts", "artifacts must be a list"))
+        return
+    content_entries = [artifact for artifact in artifacts if isinstance(artifact, dict) and artifact.get("path") == "content.md"]
+    if len(content_entries) != 1:
+        errors.append(_error(phase_dir / "manifest.json", "invalid_content_artifact", "artifacts must contain exactly one content.md entry"))
+    resolved_phase_dir = phase_dir.resolve()
+    for artifact in artifacts:
+        if not isinstance(artifact, dict) or not isinstance(artifact.get("path"), str):
+            errors.append(_error(phase_dir / "manifest.json", "invalid_artifact", "each artifact needs a relative path"))
+            continue
+        relative_path = Path(artifact["path"])
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            errors.append(_error(phase_dir / "manifest.json", "invalid_artifact_path", "artifact path must stay inside phase directory"))
+            continue
+        artifact_path = phase_dir / relative_path
+        if not _is_within(artifact_path.resolve(), resolved_phase_dir):
+            errors.append(_error(phase_dir / "manifest.json", "invalid_artifact_path", "artifact path must stay inside phase directory after resolving symlinks"))
+            continue
+        if not artifact_path.is_file():
+            errors.append(_error(artifact_path, "missing_artifact", "manifest artifact does not exist"))
+
+
+def _is_nonnegative_int(value: Any) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _allowed_base_statuses(directory: str) -> frozenset[str]:
+    """Return statuses a completed base phase may record on a QA-reaching run."""
+    return BASE_PHASE_READY_STATUSES.get(directory, frozenset({"SUCCESS"}))
+
+
+def _base_phase_is_ready(directory: str, manifest: dict[str, Any] | None) -> bool:
+    """Return whether a base phase is a successful non-terminal result with no error."""
+    if manifest is None:
+        return False
+    return (
+        manifest.get("status") in _allowed_base_statuses(directory)
+        and manifest.get("terminal") is False
+        and manifest.get("error_code") == "NONE"
+    )
+
+
+def _requires_content_body(directory: str) -> bool:
+    """Return whether a phase content file must carry a body beyond the handoff envelope."""
+    return any(pattern.fullmatch(directory) for pattern in CONTENT_BODY_DIRECTORY_PATTERNS)
+
+
+def _validate_manifest(
+    phase_dir: Path,
+    manifest: dict[str, Any],
+    run_dir: Path,
+    errors: list[ValidationError],
+) -> None:
+    path = phase_dir / "manifest.json"
+    status = manifest.get("status")
+    if status not in ALLOWED_PHASE_STATUSES:
+        errors.append(_error(path, "unknown_status", f"status must be one of {sorted(ALLOWED_PHASE_STATUSES)}"))
+    if manifest.get("schema_version") != SCHEMA_VERSION:
+        errors.append(_error(path, "invalid_schema_version", f"schema_version must be {SCHEMA_VERSION}"))
+    if manifest.get("agent") not in CANONICAL_AGENTS:
+        errors.append(_error(path, "unknown_agent", "agent must be a canonical PRD agent name"))
+    if manifest.get("next_agent") not in CANONICAL_NEXT_AGENTS:
+        errors.append(_error(path, "unknown_next_agent", "next_agent must be a canonical PRD agent name or STOP"))
+    if manifest.get("terminal") is True and status not in TERMINAL_SUMMARY_STATUSES:
+        errors.append(
+            _error(path, "invalid_terminal_summary_status", "terminal summary status must be SUCCESS, BLOCKED, or FAILED")
+        )
+    if manifest.get("document_type") not in ALLOWED_DOCUMENT_TYPES:
+        errors.append(_error(path, "unknown_document_type", "document_type is not allowed"))
+    if manifest.get("mode") not in ALLOWED_MODES:
+        errors.append(_error(path, "unknown_mode", "mode is not allowed"))
+    if manifest.get("complexity") not in ALLOWED_COMPLEXITIES:
+        errors.append(_error(path, "unknown_complexity", "complexity is not allowed"))
+    if manifest.get("error_code") not in ALLOWED_ERROR_CODES:
+        errors.append(_error(path, "unknown_error_code", "error_code is not allowed"))
+    artifact_dir = manifest.get("artifact_dir")
+    if not isinstance(artifact_dir, str) or not Path(artifact_dir).is_absolute():
+        errors.append(_error(path, "relative_artifact_dir", "artifact_dir must be absolute"))
+    elif Path(artifact_dir).resolve() != run_dir:
+        errors.append(_error(path, "artifact_dir_mismatch", "artifact_dir must equal resolved run directory"))
+    target_path = manifest.get("target_path")
+    resolved_phase = _canonical_phase_name(phase_dir.name, manifest)
+    if not isinstance(target_path, str):
+        errors.append(_error(path, "invalid_target_path", "target_path must be a string or empty"))
+    elif not target_path:
+        if resolved_phase not in (None, "LOAD"):
+            errors.append(_error(path, "missing_target_path", "target_path must be a non-empty absolute path from PLAN onward"))
+    elif not Path(target_path).is_absolute():
+        errors.append(_error(path, "relative_target_path", "target_path must be absolute"))
+
+    retry_count = manifest.get("retry_count")
+    retry_limit = manifest.get("retry_limit")
+    consolidation_attempts = manifest.get("consolidation_attempts")
+    if not _is_nonnegative_int(retry_count):
+        errors.append(_error(path, "invalid_retry_count", "retry_count must be a non-negative integer"))
+    if not _is_nonnegative_int(retry_limit):
+        errors.append(_error(path, "invalid_retry_limit", "retry_limit must be a non-negative integer"))
+    if not _is_nonnegative_int(consolidation_attempts):
+        errors.append(_error(path, "invalid_consolidation_attempts", "consolidation_attempts must be a non-negative integer"))
+    elif consolidation_attempts > 1:
+        errors.append(_error(path, "consolidation_attempts_exceeded", "consolidation_attempts must not exceed one"))
+
+    complexity = manifest.get("complexity")
+    if complexity in {"Simple", "Complex", "UNKNOWN"} and _is_nonnegative_int(retry_limit):
+        expected_limit = 1 if complexity == "Simple" else 2 if complexity == "Complex" else 0
+        if retry_limit != expected_limit:
+            errors.append(_error(path, "invalid_retry_limit", f"retry_limit must be {expected_limit} for {complexity}"))
+    if phase_dir.name == "00-load":
+        if complexity != "UNKNOWN":
+            errors.append(_error(path, "invalid_load_complexity", "LOAD must record complexity UNKNOWN before planning"))
+        if retry_limit != 0:
+            errors.append(_error(path, "invalid_retry_limit", "LOAD must record retry_limit 0 before planning"))
+    if _is_nonnegative_int(retry_count) and _is_nonnegative_int(retry_limit) and retry_count > retry_limit:
+        errors.append(_error(path, "retry_count_exceeded", "retry_count must not exceed retry_limit"))
+
+    if manifest.get("phase") == "QA" and manifest.get("qa_verdict") == "CHECKLIST_FAILED":
+        expected_author = {
+            "Use Case": "prd-author",
+            "Notification": "prd-noti-req-author",
+            "Email Template": "prd-email-req-author",
+        }.get(manifest.get("document_type"))
+        if not (
+            status == "SUCCESS"
+            and manifest.get("error_code") == "CHECKLIST_FAILED"
+            and manifest.get("terminal") is False
+            and manifest.get("next_agent") == expected_author
+        ):
+            errors.append(_error(path, "invalid_qa_repair_mapping", "CHECKLIST_FAILED QA must map to its document-type author"))
+    if manifest.get("terminal") is True:
+        if status == "SUCCESS" and manifest.get("qa_verdict") != "CHECKLIST_PASSED":
+            errors.append(_error(path, "terminal_success_without_checklist", "terminal success requires CHECKLIST_PASSED"))
+        if status in {"BLOCKED", "FAILED"} and (
+            manifest.get("error_code") == "NONE" or manifest.get("next_agent") != "STOP"
+        ):
+            errors.append(_error(path, "invalid_terminal_failure", "terminal blocked/failed result needs error code and STOP next_agent"))
+
+
+def _canonical_phase_binding(name: str) -> tuple[str, int] | None:
+    if name in CANONICAL_PHASE_DIRECTORIES:
+        return CANONICAL_PHASE_DIRECTORIES[name]
+    if QA_DIRECTORY_PATTERN.fullmatch(name):
+        return ("QA", 5)
+    if REPAIR_DIRECTORY_PATTERN.fullmatch(name):
+        return ("REPAIR", 6)
+    return None
+
+
+def _canonical_phase_name(directory: str, manifest: dict[str, Any]) -> str | None:
+    """Resolve the canonical phase for a directory, falling back to its declared phase."""
+    binding = _canonical_phase_binding(directory)
+    if binding is not None:
+        return binding[0]
+    declared = manifest.get("phase")
+    return declared if isinstance(declared, str) else None
+
+
+def _validate_run_wide_binding(
+    run_dir: Path,
+    manifests: dict[str, dict[str, Any]],
+    errors: list[ValidationError],
+) -> None:
+    """Require one run_id and equal target, type, and mode across every post-LOAD phase."""
+    if not manifests:
+        return
+    run_ids = [manifest.get("run_id") for manifest in manifests.values()]
+    if any(run_id != run_ids[0] for run_id in run_ids[1:]) or not isinstance(run_ids[0], str) or not run_ids[0]:
+        errors.append(_error(run_dir, "cross_phase_mismatch", "run_id must be one non-empty run-wide value across all phases"))
+    scoped = [
+        manifest
+        for directory, manifest in manifests.items()
+        if _canonical_phase_name(directory, manifest) in CROSS_PHASE_SCOPES
+    ]
+    if not scoped:
+        return
+    for field in CROSS_PHASE_FIELDS:
+        values = [manifest.get(field) for manifest in scoped]
+        first = values[0]
+        if any(value != first for value in values[1:]) or not isinstance(first, str) or not first:
+            errors.append(
+                _error(
+                    run_dir,
+                    "cross_phase_mismatch",
+                    f"{field} must be one non-empty value across PLAN through REPORT phases",
+                )
+            )
+
+
+def _validate_phase_directories(
+    run_dir: Path,
+    phase_dirs: list[Path],
+    manifests: dict[str, dict[str, Any]],
+    errors: list[ValidationError],
+) -> None:
+    for phase_dir in phase_dirs:
+        expected_binding = _canonical_phase_binding(phase_dir.name)
+        if expected_binding is None:
+            errors.append(_error(phase_dir, "invalid_phase_topology", "phase directory is not canonical"))
+            continue
+        manifest = manifests.get(phase_dir.name)
+        if manifest is None:
+            continue
+        expected_phase, expected_phase_number = expected_binding
+        if manifest.get("phase") != expected_phase or manifest.get("phase_number") != expected_phase_number:
+            errors.append(
+                _error(
+                    phase_dir / "manifest.json",
+                    "invalid_phase_binding",
+                    f"{phase_dir.name} must declare phase {expected_phase} with phase_number {expected_phase_number}",
+                )
+            )
+
+
+def _validate_base_phase_topology(
+    run_dir: Path,
+    phase_names: set[str],
+    manifests: dict[str, dict[str, Any]],
+    errors: list[ValidationError],
+) -> bool:
+    """Validate contiguous pre-QA phases and allow an early terminal summary.
+
+    A missing ``07-summary`` is recorded by the caller; this routine still emits the
+    base-phase and QA topology findings so the absent summary does not mask them.
+    """
+    names = set(phase_names)
+    summary = manifests.get(SUMMARY_DIRECTORY)
+
+    present_indices = [index for index, (directory, _) in enumerate(BASE_PHASES) if directory in names]
+    expected_indices = list(range(len(present_indices)))
+    if present_indices != expected_indices:
+        errors.append(_error(run_dir, "invalid_phase_topology", "base phases must form a contiguous prefix from LOAD"))
+        return False
+    if not present_indices:
+        errors.append(_error(run_dir, "invalid_phase_topology", "run requires LOAD before summary"))
+        return False
+
+    for directory, phase in BASE_PHASES:
+        manifest = manifests.get(directory)
+        if manifest is not None and manifest.get("phase") != phase:
+            errors.append(_error(run_dir / directory / "manifest.json", "invalid_phase_topology", f"{directory} must declare phase {phase}"))
+
+    reached_qa = any(name.startswith("05-qa-attempt-") for name in names)
+    if reached_qa:
+        if len(present_indices) != len(BASE_PHASES):
+            if summary is not None and summary.get("status") == "SUCCESS":
+                errors.append(_error(run_dir / SUMMARY_DIRECTORY / "manifest.json", "invalid_success_terminal_topology", "successful summary requires all base phases and QA"))
+            else:
+                errors.append(_error(run_dir, "invalid_phase_topology", "QA requires all base phases"))
+        if not all(_base_phase_is_ready(directory, manifests.get(directory)) for directory, _ in BASE_PHASES):
+            errors.append(_error(run_dir, "invalid_terminal_topology", "pre-QA base phases must be successful non-terminal results"))
+        return True
+
+    terminal_index = present_indices[-1]
+    terminal_directory, terminal_phase = BASE_PHASES[terminal_index]
+    terminal_manifest = manifests.get(terminal_directory)
+    if terminal_manifest is None:
+        return False
+    allowed_directories = {directory for directory, _ in BASE_PHASES[:terminal_index + 1]} | {SUMMARY_DIRECTORY}
+    unexpected_directories = names - allowed_directories
+    if unexpected_directories:
+        errors.append(_error(run_dir, "invalid_phase_topology", "early terminal run contains unapproved phase directories"))
+
+    if not all(_base_phase_is_ready(directory, manifests.get(directory)) for directory, _ in BASE_PHASES[:terminal_index]):
+        errors.append(_error(run_dir, "invalid_terminal_topology", "early terminal preceding base phases must be successful non-terminal results"))
+
+    if summary is None:
+        return False
+
+    expected_status, allowed_errors = EARLY_TERMINAL_RULES[terminal_phase]
+    if not (
+        terminal_manifest.get("status") == expected_status
+        and terminal_manifest.get("terminal") is False
+        and terminal_manifest.get("error_code") in allowed_errors
+        and summary.get("terminal") is True
+        and summary.get("status") == expected_status
+        and summary.get("error_code") == terminal_manifest.get("error_code")
+    ):
+        errors.append(_error(run_dir / SUMMARY_DIRECTORY / "manifest.json", "invalid_terminal_topology", "early terminal summary must match valid failed or blocked final phase"))
+    return False
+
+
+def _validate_qa_repair_sequence(
+    run_dir: Path,
+    manifests: dict[str, dict[str, Any]],
+    errors: list[ValidationError],
+) -> None:
+    names = set(manifests)
+    qa_numbers: list[int] = []
+    repair_numbers: list[int] = []
+    malformed = []
+    for name in names:
+        if name.startswith("05-qa-attempt-"):
+            match = QA_DIRECTORY_PATTERN.fullmatch(name)
+            if match is None:
+                malformed.append(name)
+            else:
+                qa_numbers.append(int(match.group(1)))
+        if name.startswith("06-repair-attempt-"):
+            match = REPAIR_DIRECTORY_PATTERN.fullmatch(name)
+            if match is None:
+                malformed.append(name)
+            else:
+                repair_numbers.append(int(match.group(1)))
+    for name in malformed:
+        errors.append(_error(run_dir / name, "invalid_phase_topology", "phase directory name is malformed"))
+    qa_numbers.sort()
+    repair_numbers.sort()
+    if qa_numbers != list(range(1, len(qa_numbers) + 1)):
+        errors.append(_error(run_dir, "invalid_phase_topology", "QA attempts must be contiguous and start at one"))
+    if repair_numbers != list(range(1, len(repair_numbers) + 1)):
+        errors.append(_error(run_dir, "invalid_phase_topology", "repair attempts must be contiguous and start at one"))
+    if not qa_numbers:
+        return
+    if any(f"05-qa-attempt-{number}" not in manifests for number in qa_numbers):
+        return
+    has_skipped = REPAIR_SKIPPED_DIRECTORY in names
+    has_consolidation = CONSOLIDATION_DIRECTORY in names
+    other_phase6 = [
+        name for name in names if name.startswith("06-") and name not in {
+            REPAIR_SKIPPED_DIRECTORY,
+            CONSOLIDATION_DIRECTORY,
+            *(f"06-repair-attempt-{number}" for number in repair_numbers),
+        }
+    ]
+    for name in other_phase6:
+        errors.append(_error(run_dir / name, "invalid_phase_topology", "unknown Phase 6 directory"))
+    if has_skipped and repair_numbers:
+        errors.append(_error(run_dir, "invalid_phase_topology", "repair-skipped cannot coexist with repair attempts"))
+    if has_skipped and manifests[REPAIR_SKIPPED_DIRECTORY].get("status") != "SKIPPED":
+        errors.append(_error(run_dir / REPAIR_SKIPPED_DIRECTORY / "manifest.json", "invalid_phase_topology", "repair-skipped must have SKIPPED status"))
+    expected_repairs = len(qa_numbers) - 1 - int(has_consolidation)
+    if len(repair_numbers) != expected_repairs:
+        errors.append(_error(run_dir, "invalid_phase_topology", "repair count must equal failed QA attempts"))
+    retry_limit = manifests[f"05-qa-attempt-{qa_numbers[-1]}"].get("retry_limit")
+    if _is_nonnegative_int(retry_limit) and repair_numbers and repair_numbers[-1] > retry_limit:
+        errors.append(_error(run_dir, "retry_count_exceeded", "highest repair attempt exceeds retry_limit"))
+    for repair_number in repair_numbers:
+        repair_manifest = manifests.get(f"06-repair-attempt-{repair_number}")
+        if repair_manifest is None:
+            continue
+        if repair_manifest.get("retry_count") != repair_number:
+            errors.append(_error(run_dir / f"06-repair-attempt-{repair_number}" / "manifest.json", "invalid_retry_count", "repair retry_count must equal repair attempt number"))
+    summary = manifests.get("07-summary")
+    final_qa = manifests[f"05-qa-attempt-{qa_numbers[-1]}"]
+    clean_final_qa = (
+        final_qa.get("status") == "SUCCESS"
+        and final_qa.get("terminal") is False
+        and final_qa.get("qa_verdict") == "CHECKLIST_PASSED"
+        and final_qa.get("error_code") == "NONE"
+    )
+    if summary is not None and summary.get("qa_verdict") != final_qa.get("qa_verdict"):
+        errors.append(
+            _error(
+                run_dir / "07-summary" / "manifest.json",
+                "invalid_summary_qa_verdict",
+                "summary qa_verdict must equal the final QA attempt verdict",
+            )
+        )
+    if clean_final_qa and not repair_numbers and not has_skipped and not has_consolidation:
+        errors.append(_error(run_dir, "invalid_phase_topology", "clean QA requires repair-skipped or consolidation artifact"))
+    for index, qa_number in enumerate(qa_numbers, start=1):
+        qa_manifest = manifests[f"05-qa-attempt-{qa_number}"]
+        verdict = qa_manifest.get("qa_verdict")
+        is_consolidation_pass = has_consolidation and index == len(qa_numbers) - 1
+        if index < len(qa_numbers) and verdict != ("CHECKLIST_PASSED" if is_consolidation_pass else "CHECKLIST_FAILED"):
+            errors.append(_error(run_dir / f"05-qa-attempt-{qa_number}" / "manifest.json", "invalid_qa_sequence", "QA sequence has invalid verdict"))
+        if index < len(qa_numbers) and not is_consolidation_pass and f"06-repair-attempt-{index}" not in names:
+            errors.append(_error(run_dir, "invalid_phase_topology", "failed QA requires matching repair attempt"))
+        expected_retry_count = index - 1 if index < len(qa_numbers) and not is_consolidation_pass else len(repair_numbers)
+        if qa_manifest.get("retry_count") != expected_retry_count:
+            errors.append(_error(run_dir / f"05-qa-attempt-{qa_number}" / "manifest.json", "invalid_retry_count", "QA retry_count must retain consumed repairs"))
+    if summary is not None and summary.get("status") == "SUCCESS":
+        if not (
+            clean_final_qa
+            and summary.get("qa_verdict") == "CHECKLIST_PASSED"
+            and summary.get("terminal") is True
+            and summary.get("error_code") == "NONE"
+            and summary.get("next_agent") == "STOP"
+        ):
+            errors.append(
+                _error(
+                    run_dir / "07-summary" / "manifest.json",
+                    "invalid_success_terminal_topology",
+                    "successful summary requires passing non-terminal final QA and a terminal STOP summary",
+                )
+            )
+    elif summary is not None and summary.get("error_code") == "VALIDATION_FAILED":
+        # VALIDATION_FAILED terminates two distinct stages. REPORT stage: a clean passing
+        # non-terminal final QA reached REPORT and the REPORT validator rejected the summary.
+        # QA stage: the checker returned unsupported, mixed, empty, or malformed output, so QA
+        # failed with VALIDATION_FAILED, never reached a passing verdict, and produced no Phase 6
+        # artifact. Accept either shape; reject only when neither holds.
+        report_stage_failure = clean_final_qa
+        qa_stage_failure = (
+            final_qa.get("status") == "FAILED"
+            and final_qa.get("error_code") == "VALIDATION_FAILED"
+            and final_qa.get("terminal") is False
+            and final_qa.get("next_agent") == "STOP"
+            and not repair_numbers
+            and not has_skipped
+            and not has_consolidation
+        )
+        if not (
+            (report_stage_failure or qa_stage_failure)
+            and summary.get("status") == "FAILED"
+            and summary.get("terminal") is True
+            and summary.get("next_agent") == "STOP"
+        ):
+            errors.append(
+                _error(
+                    run_dir / "07-summary" / "manifest.json",
+                    "invalid_failed_terminal_topology",
+                    "report validation failure requires passing non-terminal final QA or a Phase-6-free failed non-terminal STOP QA validation failure, and a terminal STOP summary",
+                )
+            )
+    elif summary is not None and clean_final_qa:
+        errors.append(
+            _error(
+                run_dir / "07-summary" / "manifest.json",
+                "invalid_success_terminal_topology",
+                "clean QA topology requires a SUCCESS summary status",
+            )
+        )
+    if summary is not None and summary.get("status") != "SUCCESS":
+        if summary.get("error_code") == "QA_RETRY_EXHAUSTED":
+            retry_limit = final_qa.get("retry_limit")
+            consumed_retries = len(repair_numbers)
+            if not (
+                final_qa.get("qa_verdict") == "CHECKLIST_FAILED"
+                and _is_nonnegative_int(retry_limit)
+                and consumed_retries == retry_limit
+                and len(qa_numbers) == retry_limit + 1
+                and final_qa.get("retry_count") == consumed_retries
+                and summary.get("retry_count") == final_qa.get("retry_count")
+            ):
+                errors.append(
+                    _error(
+                        run_dir / "07-summary" / "manifest.json",
+                        "invalid_failed_terminal_topology",
+                        "retry exhaustion requires every retry to have a repair and QA recheck with matching final counts",
+                    )
+                )
+        elif summary.get("error_code") == "CONSOLIDATION_REGRESSION":
+            penultimate_qa = manifests.get(f"05-qa-attempt-{qa_numbers[-2]}") if len(qa_numbers) > 1 else None
+            if not (
+                has_consolidation
+                and penultimate_qa is not None
+                and penultimate_qa.get("qa_verdict") == "CHECKLIST_PASSED"
+                and final_qa.get("qa_verdict") == "CHECKLIST_FAILED"
+            ):
+                errors.append(_error(run_dir / "07-summary" / "manifest.json", "invalid_failed_terminal_topology", "consolidation regression requires pass, consolidation, then failed QA"))
+        elif final_qa.get("qa_verdict") == "CHECKLIST_FAILED":
+            errors.append(
+                _error(
+                    run_dir / "07-summary" / "manifest.json",
+                    "invalid_failed_terminal_topology",
+                    "failed final QA must terminate as QA_RETRY_EXHAUSTED or CONSOLIDATION_REGRESSION",
+                )
+            )
+    if has_consolidation:
+        consolidation = manifests[CONSOLIDATION_DIRECTORY]
+        if consolidation.get("consolidation_attempts") != 1:
+            errors.append(_error(run_dir / CONSOLIDATION_DIRECTORY / "manifest.json", "invalid_phase_topology", "consolidation attempt must record count one"))
+        if qa_numbers[-1] < 2:
+            errors.append(_error(run_dir / CONSOLIDATION_DIRECTORY / "manifest.json", "invalid_phase_topology", "consolidation requires following QA recheck"))
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def validate_run(run_dir: Path, repository_root: Path | None = None) -> list[ValidationError]:
+    """Validate phase manifests and paired content artifacts in a run directory."""
+    errors: list[ValidationError] = []
+    if not run_dir.is_dir():
+        return [_error(run_dir, "missing_run", "run directory does not exist")]
+
+    resolved_run_dir = run_dir.resolve()
+    if repository_root is not None and _is_within(resolved_run_dir, repository_root.resolve()):
+        return [_error(run_dir, "run_dir_inside_repository", "run directory must be outside repository root")]
+
+    phase_dirs = sorted(path for path in resolved_run_dir.iterdir() if path.is_dir())
+    phase_names = {path.name for path in phase_dirs}
+    if SUMMARY_DIRECTORY not in phase_names:
+        errors.append(_error(resolved_run_dir / SUMMARY_DIRECTORY, "missing_summary", "required phase directory is missing"))
+
+    manifests: dict[str, dict[str, Any]] = {}
+    for phase_dir in phase_dirs:
+        manifest_path = phase_dir / "manifest.json"
+        content_path = phase_dir / "content.md"
+        if not manifest_path.is_file():
+            errors.append(_error(manifest_path, "missing_manifest", "phase requires manifest.json"))
+            continue
+        if not content_path.is_file():
+            errors.append(_error(content_path, "missing_content", "phase requires content.md"))
+        try:
+            parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            errors.append(_error(manifest_path, "invalid_json", f"manifest must contain valid JSON: {exc}"))
+            continue
+        if not isinstance(parsed, dict):
+            errors.append(_error(manifest_path, "manifest_not_object", "manifest JSON must be an object"))
+            continue
+        manifest = parsed
+        manifests[phase_dir.name] = manifest
+        missing_keys = REQUIRED_MANIFEST_KEYS - manifest.keys()
+        for key in sorted(missing_keys):
+            errors.append(_error(manifest_path, "missing_manifest_key", f"missing required key: {key}"))
+        if _contains_template(manifest):
+            errors.append(_error(manifest_path, "unresolved_template", "manifest contains unresolved template token"))
+        _validate_manifest(phase_dir, manifest, resolved_run_dir, errors)
+        _validate_artifacts(phase_dir, manifest, errors)
+        body = _validate_handoff(content_path, manifest, errors)
+        if content_path.is_file() and not body and _requires_content_body(phase_dir.name):
+            errors.append(_error(content_path, "missing_content_body", "phase content requires a non-empty body beyond the handoff envelope"))
+        if phase_dir.name == "03-figma" and manifest.get("status") == "SKIPPED" and not body:
+            errors.append(_error(content_path, "missing_skipped_figma_reason", "skipped Figma content requires a non-empty reason"))
+        if phase_dir.name == "06-repair-skipped" and manifest.get("status") == "SKIPPED" and not body:
+            errors.append(_error(content_path, "missing_skipped_repair_reason", "skipped repair content requires a non-empty reason"))
+    _validate_phase_directories(resolved_run_dir, phase_dirs, manifests, errors)
+    _validate_run_wide_binding(resolved_run_dir, manifests, errors)
+    reaches_qa = _validate_base_phase_topology(resolved_run_dir, phase_names, manifests, errors)
+    if reaches_qa:
+        _validate_qa_repair_sequence(resolved_run_dir, manifests, errors)
+    return _sorted(errors)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Validate canonical PRD pipeline packages and runs")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    package_parser = subparsers.add_parser("package")
+    package_parser.add_argument("--skill-root", required=True, type=Path)
+    run_parser = subparsers.add_parser("run")
+    run_parser.add_argument("--run-dir", required=True, type=Path)
+    run_parser.add_argument("--repository-root", type=Path)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run package or run validation and print deterministic findings."""
+    parser = _build_parser()
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return int(exc.code)
+    if args.command == "package":
+        path = args.skill_root
+        errors = validate_package(path)
+    else:
+        path = args.run_dir
+        errors = validate_run(path, args.repository_root)
+    if not errors:
+        print(f"PASS {path}")
+        return 0
+    for error in errors:
+        print(f"ERROR {error.code} {error.path}: {error.message}")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

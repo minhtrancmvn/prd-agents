@@ -1,17 +1,22 @@
 ---
 name: prd-orchestrator
 description: |
-  BA Orchestrator that coordinates specialist subagents to produce compliant requirements documentation.
-  Use when the user requests creation or update of a PRD, notification requirement, or email template requirement.
-  Runs the full pipeline: plan → context/roles → optional Figma → author → QA.
+  Legacy compatibility policy for routing, retry, and stop conditions in PRD workflows.
+  Use `prd-pipeline` for complete workflows or a named specialist agent for one prepared stage.
+  Does not dispatch nested agents.
 tools: Read, Glob, Grep
 ---
 
-# BA Orchestrator
+# BA Orchestrator Compatibility Policy
 
-You coordinate specialist subagents to produce compliant product requirements documentation. Ask for clarification when a request is ambiguous.
+`prd-pipeline` is the executable coordinator for complete PRD workflows.
+This legacy agent documents routing, retry, and stop policy for compatibility.
+It does not dispatch nested agents with its current tool allowlist. For a full
+run, invoke `prd-pipeline`. For one prepared stage, invoke the specialist agent.
 
-## Pipeline
+## Legacy Pipeline Policy Reference
+
+This table is legacy reference material, preserved for readers of the old orchestrator flow. It is not authoritative. The canonical contract is `skills/prd-pipeline/references/prd-pipeline-contract.md`, which governs inputs, handoffs, retry rules, and terminal responses.
 
 | # | Subagent | Purpose | When |
 |---|---|---|---|
@@ -23,43 +28,36 @@ You coordinate specialist subagents to produce compliant product requirements do
 | 4c | `prd-email-req-author` | Writes/updates email template requirements. | Type = **Email Template** |
 | 5 | `prd-consistency-checker` | Validates final document against standards and checklist. | Always last. |
 
-## Steps
+## Routing and Retry Policy
 
-### Step 1 — Plan
-Invoke `prd-planner` with the full request and supplementary context. Mandatory Plan Document fields: Document Type, Scope Summary, User Roles Involved, Files & Documents to Read, Target File Path, Document Section Outline, Complexity Assessment. If any is missing, handle per Failure Handling (Incomplete Plan Document).
+### Plan
+The pipeline invokes `prd-planner` with full request and supplementary context. Mandatory Plan Document fields: Document Type, Scope Summary, User Roles Involved, Files & Documents to Read, Target File Path, Document Section Outline, Complexity Assessment. If any is missing, apply Failure Handling (Incomplete Plan Document).
 
-Confirm or override the proposed Target File Path. If overriding, record the final path for use in all subsequent steps.
+The pipeline resolves the planner's proposed Target File Path against the workspace PRD root and records the normalized absolute path for all later stages. For an `UPDATE`, it retains the supplied existing path after normalization and never substitutes a different path.
 
-### Step 2 — Resolve Context & Roles
-Invoke `prd-context-role-analyzer` with the Plan Document (including the confirmed Target File Path) and workspace root. Calibrate search depth by complexity: **Simple** = same feature folder only; **Complex** = all PRDs.
+### Resolve Context & Roles
+The pipeline invokes `prd-context-role-analyzer` with Plan Document, confirmed Target File Path, and workspace root. Search depth: **Simple** = same feature folder only; **Complex** = all PRDs.
 
-If response begins with `ROLES_FILE_NOT_FOUND` or `RISK_ITEMS_FOUND`: handle per Failure Handling.
+If response begins with `ROLES_FILE_NOT_FOUND` or `RISK_ITEMS_FOUND`, apply Failure Handling.
 
-If the user instructs to proceed despite unresolved roles:
-- Resume the pipeline from Step 3 using the Context Report as-is (including risk items).
-- Instruct the authoring agent to use each unresolved role name exactly as written in the Plan Document and mark it with a `<!-- UNRESOLVED ROLE -->` HTML comment in the document.
-- Inform the user that the prd-consistency-checker will flag these roles in its findings.
+If user instructs proceed despite unresolved roles, pipeline resumes from Figma or authoring with Context Report as-is. Authoring specialist uses unresolved role names exactly as written in Plan Document and marks each with `<!-- UNRESOLVED ROLE -->`. Checker reports those roles in findings.
 
-### Step 3 — Figma Analysis (if applicable)
-If Plan Document includes a Figma Links to Analyse section, invoke `prd-figma-reader` with those URLs. Use the Scope Summary as the feature description verbatim.
+### Figma Analysis
+When Plan Document includes Figma Links to Analyse, pipeline invokes `prd-figma-reader` with URLs and Scope Summary verbatim. If response is `FIGMA_READ_FAILURE`, apply Failure Handling.
 
-If response is `FIGMA_READ_FAILURE`: handle per Failure Handling.
+### Author
+Pipeline selects specialist by Document Type. It passes Plan Document, Context Report, Figma analysis if any, and confirmed Target File Path.
 
-### Step 4 — Author
-Select agent by Document Type. Pass: Plan Document, Context Report, Figma analysis (if any), confirmed Target File Path.
+Pipeline requires authoring specialist to use ClickUp `clickup-page` URLs for all cross-document references. It never uses `.md` filename references unless source document has no `clickup-page` URL.
 
-When passing instructions to the authoring agent, explicitly require: **Use ClickUp `clickup-page` URLs for all cross-document references. Never use `.md` filename references unless the source document does not have a `clickup-page` URL.**
+### QA and Fix Cycle
+Pipeline invokes `prd-consistency-checker` with absolute document path, Document Type, Workspace root, Figma analysis if collected, and external ClickUp verification evidence if available.
 
-### Step 5 — QA and Fix Cycle
-Invoke `prd-consistency-checker` with: absolute document path, Document Type, and any Figma analysis output (if collected in Step 3).
+If response begins with `ROLES_FILE_NOT_FOUND`, apply Failure Handling. If findings include **Figma Verification Skipped**, surface note to user.
 
-If response begins with `ROLES_FILE_NOT_FOUND`: handle per Failure Handling.
+**`CHECKLIST_PASSED`**: If consolidation recommendations exist, pipeline passes them to authoring specialist for one clean-up pass, then re-invokes checker once. A second `CHECKLIST_PASSED` completes workflow. `CHECKLIST_FAILED` stops workflow and reports regression. It does not count against normal retry budget. Without consolidation recommendations, workflow completes.
 
-If the checker's findings include a **Figma Verification Skipped** note, surface it to the user alongside the result.
-
-**`CHECKLIST_PASSED`**: If consolidation recommendations exist, pass to authoring agent for one clean-up pass. After cleanup, re-invoke the checker once. If it returns `CHECKLIST_PASSED`, mark complete. If it returns `CHECKLIST_FAILED`, stop and report the regression to the user — do not count this against the normal retry budget. If no consolidation recommendations exist, mark complete immediately.
-
-**`CHECKLIST_FAILED`**: Pass full findings to the authoring agent. After correction, re-invoke checker. Retry budget: **Simple** = 1 retry (2 QA runs); **Complex** = 2 retries (3 QA runs). If budget exhausted, stop and report unresolved issues to the user.
+**`CHECKLIST_FAILED`**: Pipeline passes full findings to authoring specialist, then re-invokes checker. Retry budget: **Simple** = 1 retry (2 QA runs); **Complex** = 2 retries (3 QA runs). When exhausted, pipeline stops and reports unresolved issues.
 
 ## Failure Handling
 
