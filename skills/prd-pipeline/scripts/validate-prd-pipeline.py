@@ -33,6 +33,8 @@ ALLOWED_DOCUMENT_TYPES = {
 
 ALLOWED_MODES = {"CREATE", "UPDATE", "UNKNOWN"}
 
+ALLOWED_COMPLEXITIES = {"Simple", "Complex", "UNKNOWN"}
+
 ALLOWED_ERROR_CODES = {
     "NONE",
     "INPUT_INVALID",
@@ -49,6 +51,27 @@ ALLOWED_ERROR_CODES = {
     "VALIDATION_FAILED",
 }
 
+CONTRACT_REQUIRED_TERMS = {
+    "STATUS:",
+    "DOCUMENT_TYPE:",
+    "MODE:",
+    "TARGET_PATH:",
+    "ERROR_CODE:",
+    "CHECKLIST_PASSED",
+    "QA_RETRY_EXHAUSTED",
+    "CONSOLIDATION_REGRESSION",
+}
+
+ARTIFACT_REQUIRED_TERMS = {
+    "manifest.json",
+    "content.md",
+    "schema_version",
+    "retry_count",
+    "consolidation_attempts",
+    "qa_verdict",
+    "07-summary",
+}
+
 REQUIRED_MANIFEST_KEYS = {
     "schema_version",
     "run_id",
@@ -58,6 +81,7 @@ REQUIRED_MANIFEST_KEYS = {
     "status",
     "document_type",
     "mode",
+    "complexity",
     "target_path",
     "artifact_dir",
     "completed_checks",
@@ -129,6 +153,18 @@ def validate_package(skill_root: Path) -> list[ValidationError]:
         ):
             if term not in skill_text:
                 errors.append(_error(skill_path, "invalid_skill", f"missing required term: {term}"))
+
+    reference_terms = {
+        "references/prd-pipeline-contract.md": ("invalid_contract", CONTRACT_REQUIRED_TERMS),
+        "references/prd-artifact-format.md": ("invalid_artifact_format", ARTIFACT_REQUIRED_TERMS),
+    }
+    for relative_path, (code, terms) in reference_terms.items():
+        path = skill_root / relative_path
+        if path.is_file():
+            reference_text = path.read_text(encoding="utf-8")
+            for term in sorted(terms):
+                if term not in reference_text:
+                    errors.append(_error(path, code, f"missing required term: {term}"))
     return _sorted(errors)
 
 
@@ -140,14 +176,6 @@ def _contains_template(value: Any) -> bool:
     if isinstance(value, list):
         return any(_contains_template(item) for item in value)
     return False
-
-
-def _complexity_for_manifests(manifests: list[tuple[Path, dict[str, Any]]]) -> str | None:
-    for _, manifest in manifests:
-        complexity = manifest.get("complexity")
-        if complexity in {"Simple", "Complex"}:
-            return complexity
-    return None
 
 
 def _validate_artifacts(phase_dir: Path, manifest: dict[str, Any], errors: list[ValidationError]) -> None:
@@ -205,16 +233,14 @@ def validate_run(run_dir: Path) -> list[ValidationError]:
     if not any(path.name == "07-summary" for path in phase_dirs):
         errors.append(_error(run_dir / "07-summary", "missing_summary", "run requires 07-summary phase"))
 
-    complexity = _complexity_for_manifests(manifests)
-    if complexity is not None:
-        expected_limit = 1 if complexity == "Simple" else 2
-        for phase_dir, manifest in manifests:
-            retry_limit = manifest.get("retry_limit")
+    for phase_dir, manifest in manifests:
+        complexity = manifest.get("complexity")
+        retry_limit = manifest.get("retry_limit")
+        retry_count = manifest.get("retry_count")
+        if complexity in {"Simple", "Complex"}:
+            expected_limit = 1 if complexity == "Simple" else 2
             if retry_limit != expected_limit:
                 errors.append(_error(phase_dir / "manifest.json", "invalid_retry_limit", f"retry_limit must be {expected_limit} for {complexity}"))
-    for phase_dir, manifest in manifests:
-        retry_count = manifest.get("retry_count")
-        retry_limit = manifest.get("retry_limit")
         if isinstance(retry_count, int) and isinstance(retry_limit, int) and retry_count > retry_limit:
             errors.append(_error(phase_dir / "manifest.json", "retry_count_exceeded", "retry_count must not exceed retry_limit"))
     return _sorted(errors)
@@ -229,6 +255,8 @@ def _validate_manifest(phase_dir: Path, manifest: dict[str, Any], errors: list[V
         errors.append(_error(path, "unknown_document_type", "document_type is not allowed"))
     if manifest.get("mode") not in ALLOWED_MODES:
         errors.append(_error(path, "unknown_mode", "mode is not allowed"))
+    if manifest.get("complexity") not in ALLOWED_COMPLEXITIES:
+        errors.append(_error(path, "unknown_complexity", "complexity is not allowed"))
     if manifest.get("error_code") not in ALLOWED_ERROR_CODES:
         errors.append(_error(path, "unknown_error_code", "error_code is not allowed"))
     artifact_dir = manifest.get("artifact_dir")

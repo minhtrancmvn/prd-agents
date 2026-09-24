@@ -10,6 +10,29 @@ from types import ModuleType
 
 
 VALIDATOR_PATH = Path(__file__).parents[1] / "scripts" / "validate-prd-pipeline.py"
+CONTRACT_PATH = Path(__file__).parents[1] / "references" / "prd-pipeline-contract.md"
+ARTIFACT_FORMAT_PATH = Path(__file__).parents[1] / "references" / "prd-artifact-format.md"
+
+CONTRACT_REQUIRED_TERMS = {
+    "STATUS:",
+    "DOCUMENT_TYPE:",
+    "MODE:",
+    "TARGET_PATH:",
+    "ERROR_CODE:",
+    "CHECKLIST_PASSED",
+    "QA_RETRY_EXHAUSTED",
+    "CONSOLIDATION_REGRESSION",
+}
+
+ARTIFACT_REQUIRED_TERMS = {
+    "manifest.json",
+    "content.md",
+    "schema_version",
+    "retry_count",
+    "consolidation_attempts",
+    "qa_verdict",
+    "07-summary",
+}
 
 
 spec = importlib.util.spec_from_file_location("validate_prd_pipeline", VALIDATOR_PATH)
@@ -48,8 +71,8 @@ class PackageValidationTests(unittest.TestCase):
             f"{phases}\n",
             encoding="utf-8",
         )
-        (root / "references" / "prd-pipeline-contract.md").write_text("contract", encoding="utf-8")
-        (root / "references" / "prd-artifact-format.md").write_text("artifact format", encoding="utf-8")
+        (root / "references" / "prd-pipeline-contract.md").write_text(" ".join(CONTRACT_REQUIRED_TERMS), encoding="utf-8")
+        (root / "references" / "prd-artifact-format.md").write_text(" ".join(ARTIFACT_REQUIRED_TERMS), encoding="utf-8")
         (root / "scripts" / "validate-prd-pipeline.py").write_text("validator", encoding="utf-8")
         (root / "tests" / "test_validate_prd_pipeline.py").write_text("tests", encoding="utf-8")
         return root
@@ -71,6 +94,30 @@ class PackageValidationTests(unittest.TestCase):
     def test_complete_package_passes(self) -> None:
         root = self.make_complete_skill_root()
         self.assertEqual(validator.validate_package(root), [])
+
+    def test_package_rejects_contract_missing_required_term(self) -> None:
+        root = self.make_complete_skill_root()
+        (root / "references" / "prd-pipeline-contract.md").write_text("STATUS:", encoding="utf-8")
+        self.assertIn("invalid_contract", {error.code for error in validator.validate_package(root)})
+
+    def test_package_rejects_artifact_format_missing_required_term(self) -> None:
+        root = self.make_complete_skill_root()
+        (root / "references" / "prd-artifact-format.md").write_text("manifest.json", encoding="utf-8")
+        self.assertIn("invalid_artifact_format", {error.code for error in validator.validate_package(root)})
+
+    def test_contract_reference_contains_required_terms(self) -> None:
+        contract_text = CONTRACT_PATH.read_text(encoding="utf-8")
+        self.assertEqual(
+            {term for term in CONTRACT_REQUIRED_TERMS if term not in contract_text},
+            set(),
+        )
+
+    def test_artifact_format_reference_contains_required_terms(self) -> None:
+        artifact_format_text = ARTIFACT_FORMAT_PATH.read_text(encoding="utf-8")
+        self.assertEqual(
+            {term for term in ARTIFACT_REQUIRED_TERMS if term not in artifact_format_text},
+            set(),
+        )
 
 
 class RunValidationTests(unittest.TestCase):
@@ -109,9 +156,9 @@ class RunValidationTests(unittest.TestCase):
             "status": status,
             "document_type": document_type,
             "mode": mode,
+            "complexity": complexity or "UNKNOWN",
             "target_path": target_path,
             "artifact_dir": str(run_dir.resolve()),
-            **({"complexity": complexity} if complexity is not None else {}),
             "completed_checks": ["fixture check"],
             "unresolved_items": [],
             "next_agent": "prd-next-agent" if not directory.startswith("07-") else "STOP",
