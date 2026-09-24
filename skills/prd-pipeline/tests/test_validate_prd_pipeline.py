@@ -769,7 +769,7 @@ class RunValidationTests(unittest.TestCase):
         self.assert_error_code("invalid_success_terminal_topology")
 
     def test_clean_qa_topology_rejects_non_success_summary_statuses(self) -> None:
-        for status in ("SKIPPED", "SUCCESS_WITH_WARNINGS"):
+        for status in ("SKIPPED", "SUCCESS_WITH_WARNINGS", "BLOCKED", "FAILED"):
             with self.subTest(status=status):
                 self.make_successful_run()
                 self.update_manifest("07-summary", status=status)
@@ -1021,8 +1021,8 @@ class RunValidationTests(unittest.TestCase):
                     self.assert_error_code(expected_codes[field])
                     self.run_dir = Path(self.temp_dir.name) / f"run-invalid-{field}-{value}"
 
-    def test_document_not_found_blocked_run_is_valid_terminal_state(self) -> None:
-        self.assert_valid_terminal_failure("DOCUMENT_NOT_FOUND")
+    def test_document_not_found_blocked_summary_rejects_clean_qa(self) -> None:
+        self.assert_clean_qa_rejects_terminal_failure("DOCUMENT_NOT_FOUND")
 
     def test_terminal_success_requires_checklist_passed(self) -> None:
         self.make_successful_run()
@@ -1041,16 +1041,16 @@ class RunValidationTests(unittest.TestCase):
         self.update_manifest("01-plan", error_details="TODO: fill target")
         self.assert_error_code("unresolved_template")
 
-    def assert_valid_terminal_failure(self, error_code: str, status: str = "BLOCKED") -> None:
+    def assert_clean_qa_rejects_terminal_failure(self, error_code: str, status: str = "BLOCKED") -> None:
         self.make_successful_run()
         self.update_manifest("07-summary", status=status, error_code=error_code, error_details="fixture terminal state")
-        self.assertEqual(validator.validate_run(self.run_dir), [])
+        self.assert_error_code("invalid_success_terminal_topology")
 
-    def test_missing_roles_file_blocked_run_is_valid_terminal_state(self) -> None:
-        self.assert_valid_terminal_failure("ROLES_FILE_NOT_FOUND")
+    def test_missing_roles_file_blocked_summary_rejects_clean_qa(self) -> None:
+        self.assert_clean_qa_rejects_terminal_failure("ROLES_FILE_NOT_FOUND")
 
-    def test_unresolved_roles_blocked_run_is_valid_terminal_state(self) -> None:
-        self.assert_valid_terminal_failure("RISK_ITEMS_FOUND")
+    def test_unresolved_roles_blocked_summary_rejects_clean_qa(self) -> None:
+        self.assert_clean_qa_rejects_terminal_failure("RISK_ITEMS_FOUND")
 
     def test_qa_retry_exhausted_run_requires_failed_final_qa_topology(self) -> None:
         self.test_simple_exhausted_terminal_allows_consumed_repair_topology()

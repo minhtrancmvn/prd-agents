@@ -528,7 +528,13 @@ def _validate_qa_repair_sequence(
         if qa_manifest.get("retry_count") != expected_retry_count:
             errors.append(_error(run_dir / f"05-qa-attempt-{qa_number}" / "manifest.json", "invalid_retry_count", "QA retry_count must retain consumed repairs"))
     final_qa = manifests[f"05-qa-attempt-{qa_numbers[-1]}"]
-    if summary and summary.get("status") in {"SKIPPED", "SUCCESS_WITH_WARNINGS"}:
+    if summary and (
+        final_qa.get("status") == "SUCCESS"
+        and final_qa.get("terminal") is False
+        and final_qa.get("qa_verdict") == "CHECKLIST_PASSED"
+        and final_qa.get("error_code") == "NONE"
+        and summary.get("status") != "SUCCESS"
+    ):
         errors.append(
             _error(
                 run_dir / "07-summary" / "manifest.json",
