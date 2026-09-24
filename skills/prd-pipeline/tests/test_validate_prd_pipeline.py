@@ -1104,6 +1104,12 @@ class RunValidationTests(unittest.TestCase):
         self.make_qa_validation_failure_run()
         self.assertEqual(validator.validate_run(self.run_dir), [])
 
+    def test_qa_validation_failure_requires_stop_qa_next_agent(self) -> None:
+        self.make_qa_validation_failure_run()
+        self.update_manifest("05-qa-attempt-1", next_agent="prd-pipeline")
+        errors = validator.validate_run(self.run_dir)
+        self.assertIn("invalid_failed_terminal_topology", {error.code for error in errors})
+
     def test_qa_validation_failure_requires_stop_summary(self) -> None:
         self.make_qa_validation_failure_run()
         self.update_manifest("07-summary", next_agent="prd-pipeline")
