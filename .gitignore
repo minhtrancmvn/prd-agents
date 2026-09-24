@@ -8,3 +8,16 @@
 !/agents/prd-*.md
 !/prd-shared-authoring-standards.md
 !/README.md
+
+# Version approved PRD pipeline source and design specifications.
+!/docs/
+/docs/*
+!/docs/superpowers/
+/docs/superpowers/*
+!/docs/superpowers/specs/
+/docs/superpowers/specs/*
+!/docs/superpowers/specs/2026-09-24-prd-pipeline-design.md
+!/skills/
+/skills/*
+!/skills/prd-pipeline/
+!/skills/prd-pipeline/**
