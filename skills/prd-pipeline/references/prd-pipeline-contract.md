@@ -108,4 +108,4 @@ Artifacts: <absolute run artifact directory>
 Unresolved: <semicolon-separated findings or NONE>
 ```
 
-A terminal response must not claim document write success unless target exists and author handoff confirms success. Generated artifacts remain outside repository source and are reported by absolute path.
+A terminal response must not claim document write success unless target exists and author handoff confirms success. Generated artifacts remain outside repository source and are reported by absolute path. A pre-QA blocked or failed run has contiguous artifacts through failed phase and `07-summary`; it has no later phases, QA, or Phase 6 artifacts. Successful terminal response requires all base phases, QA, and valid Phase 6 topology.

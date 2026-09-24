@@ -70,6 +70,7 @@ ARTIFACT_REQUIRED_TERMS = {
     "consolidation_attempts",
     "qa_verdict",
     "07-summary",
+    "Early terminal layout",
 }
 
 REQUIRED_MANIFEST_KEYS = {
@@ -97,15 +98,14 @@ REQUIRED_MANIFEST_KEYS = {
     "artifacts",
 }
 
-REQUIRED_PHASE_DIRS = {
-    "00-load",
-    "01-plan",
-    "02-context",
-    "03-figma",
-    "04-author",
-    "05-qa-attempt-1",
-    "07-summary",
-}
+BASE_PHASES = (
+    ("00-load", "LOAD"),
+    ("01-plan", "PLAN"),
+    ("02-context", "CONTEXT"),
+    ("03-figma", "FIGMA"),
+    ("04-author", "AUTHOR"),
+)
+SUMMARY_DIRECTORY = "07-summary"
 
 QA_DIRECTORY_PATTERN = re.compile(r"05-qa-attempt-([1-9]\d*)")
 REPAIR_DIRECTORY_PATTERN = re.compile(r"06-repair-attempt-([1-9]\d*)")
@@ -332,6 +332,61 @@ def _validate_manifest(
             errors.append(_error(path, "invalid_terminal_failure", "terminal blocked/failed result needs error code and STOP next_agent"))
 
 
+def _validate_base_phase_topology(
+    run_dir: Path,
+    manifests: dict[str, dict[str, Any]],
+    errors: list[ValidationError],
+) -> bool:
+    """Validate contiguous pre-QA phases and allow an early terminal summary."""
+    names = set(manifests)
+    summary = manifests.get(SUMMARY_DIRECTORY)
+    if summary is None:
+        return False
+
+    present_indices = [index for index, (directory, _) in enumerate(BASE_PHASES) if directory in names]
+    expected_indices = list(range(len(present_indices)))
+    if present_indices != expected_indices:
+        errors.append(_error(run_dir, "invalid_phase_topology", "base phases must form a contiguous prefix from LOAD"))
+        return False
+    if not present_indices:
+        errors.append(_error(run_dir, "invalid_phase_topology", "run requires LOAD before summary"))
+        return False
+
+    for directory, phase in BASE_PHASES:
+        manifest = manifests.get(directory)
+        if manifest is not None and manifest.get("phase") != phase:
+            errors.append(_error(run_dir / directory / "manifest.json", "invalid_phase_topology", f"{directory} must declare phase {phase}"))
+
+    reached_qa = any(name.startswith("05-qa-attempt-") for name in names)
+    if summary.get("status") == "SUCCESS":
+        if len(present_indices) != len(BASE_PHASES) or not reached_qa:
+            errors.append(_error(run_dir / SUMMARY_DIRECTORY / "manifest.json", "invalid_success_terminal_topology", "successful summary requires all base phases and QA"))
+        return reached_qa
+
+    if summary.get("status") not in {"BLOCKED", "FAILED"}:
+        return reached_qa
+
+    if reached_qa:
+        if len(present_indices) != len(BASE_PHASES):
+            errors.append(_error(run_dir, "invalid_phase_topology", "QA requires all base phases"))
+        return True
+
+    terminal_index = present_indices[-1]
+    terminal_directory, _ = BASE_PHASES[terminal_index]
+    terminal_manifest = manifests[terminal_directory]
+    later_base = {directory for directory, _ in BASE_PHASES[terminal_index + 1:]} & names
+    phase_six = {name for name in names if name.startswith("06-")}
+    if later_base or phase_six:
+        errors.append(_error(run_dir, "invalid_phase_topology", "early terminal run cannot contain later phases or Phase 6 artifacts"))
+    if not (
+        terminal_manifest.get("status") in {"BLOCKED", "FAILED"}
+        and terminal_manifest.get("error_code") != "NONE"
+        and summary.get("error_code") == terminal_manifest.get("error_code")
+    ):
+        errors.append(_error(run_dir / SUMMARY_DIRECTORY / "manifest.json", "invalid_terminal_topology", "early terminal summary must match failed or blocked final phase"))
+    return False
+
+
 def _validate_qa_repair_sequence(
     run_dir: Path,
     manifests: dict[str, dict[str, Any]],
@@ -472,9 +527,8 @@ def validate_run(run_dir: Path, repository_root: Path | None = None) -> list[Val
 
     phase_dirs = sorted(path for path in resolved_run_dir.iterdir() if path.is_dir())
     phase_names = {path.name for path in phase_dirs}
-    for required_phase in sorted(REQUIRED_PHASE_DIRS - phase_names):
-        code = "missing_summary" if required_phase == "07-summary" else "missing_phase"
-        errors.append(_error(resolved_run_dir / required_phase, code, "required phase directory is missing"))
+    if SUMMARY_DIRECTORY not in phase_names:
+        errors.append(_error(resolved_run_dir / SUMMARY_DIRECTORY, "missing_summary", "required phase directory is missing"))
 
     manifests: dict[str, dict[str, Any]] = {}
     for phase_dir in phase_dirs:
@@ -507,7 +561,9 @@ def validate_run(run_dir: Path, repository_root: Path | None = None) -> list[Val
             errors.append(_error(content_path, "missing_skipped_figma_reason", "skipped Figma content requires a non-empty reason"))
         if phase_dir.name == "06-repair-skipped" and manifest.get("status") == "SKIPPED" and not body:
             errors.append(_error(content_path, "missing_skipped_repair_reason", "skipped repair content requires a non-empty reason"))
-    _validate_qa_repair_sequence(resolved_run_dir, manifests, errors)
+    reaches_qa = _validate_base_phase_topology(resolved_run_dir, manifests, errors)
+    if reaches_qa:
+        _validate_qa_repair_sequence(resolved_run_dir, manifests, errors)
     return _sorted(errors)
 
 

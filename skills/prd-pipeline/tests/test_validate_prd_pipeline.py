@@ -33,6 +33,7 @@ ARTIFACT_REQUIRED_TERMS = {
     "consolidation_attempts",
     "qa_verdict",
     "07-summary",
+    "Early terminal layout",
 }
 
 SKILL_PATH = Path(__file__).parents[1] / "SKILL.md"
@@ -456,6 +457,45 @@ class RunValidationTests(unittest.TestCase):
         )
         return self.run_dir
 
+    def make_early_terminal_run(
+        self,
+        failure_directory: str,
+        *,
+        phase: str,
+        error_code: str,
+        status: str = "FAILED",
+    ) -> Path:
+        phases = (
+            ("00-load", "LOAD", "UNKNOWN"),
+            ("01-plan", "PLAN", "Simple"),
+            ("02-context", "CONTEXT", "Simple"),
+            ("03-figma", "FIGMA", "Simple"),
+            ("04-author", "AUTHOR", "Simple"),
+        )
+        for directory, phase_name, complexity in phases:
+            is_failure = directory == failure_directory
+            self.write_phase(
+                self.run_dir,
+                directory,
+                phase=phase_name,
+                status=status if is_failure else "SUCCESS",
+                error_code=error_code if is_failure else "NONE",
+                complexity=complexity,
+                retry_limit=0 if complexity == "UNKNOWN" else 1,
+            )
+            if is_failure:
+                break
+        self.write_phase(
+            self.run_dir,
+            "07-summary",
+            phase="REPORT",
+            status=status,
+            error_code=error_code,
+            complexity="UNKNOWN" if failure_directory == "00-load" else "Simple",
+            retry_limit=0 if failure_directory == "00-load" else 1,
+        )
+        return self.run_dir
+
     def read_manifest(self, directory: str) -> dict[str, object]:
         return json.loads((self.run_dir / directory / "manifest.json").read_text(encoding="utf-8"))
 
@@ -494,6 +534,37 @@ class RunValidationTests(unittest.TestCase):
     def assert_error_code(self, code: str, repository_root: Path | None = None) -> None:
         errors = validator.validate_run(self.run_dir, repository_root)
         self.assertIn(code, {error.code for error in errors})
+
+    def test_early_terminal_failures_accept_contiguous_prefix_and_summary(self) -> None:
+        cases = (
+            ("00-load", "LOAD", "INPUT_INVALID", "FAILED"),
+            ("01-plan", "PLAN", "PLAN_INCOMPLETE", "BLOCKED"),
+            ("02-context", "CONTEXT", "ROLES_FILE_NOT_FOUND", "BLOCKED"),
+            ("03-figma", "FIGMA", "FIGMA_READ_FAILURE", "FAILED"),
+            ("04-author", "AUTHOR", "AUTHOR_WRITE_FAILURE", "FAILED"),
+        )
+        for directory, phase, error_code, status in cases:
+            with self.subTest(phase=phase):
+                self.make_early_terminal_run(directory, phase=phase, error_code=error_code, status=status)
+                self.assertEqual(validator.validate_run(self.run_dir), [])
+                self.run_dir = Path(self.temp_dir.name) / f"run-{directory}"
+
+    def test_early_terminal_failure_rejects_missing_prefix_phase(self) -> None:
+        self.make_early_terminal_run("03-figma", phase="FIGMA", error_code="FIGMA_READ_FAILURE")
+        for path in (self.run_dir / "02-context").iterdir():
+            path.unlink()
+        (self.run_dir / "02-context").rmdir()
+        self.assert_error_code("invalid_phase_topology")
+
+    def test_early_terminal_failure_rejects_later_phase(self) -> None:
+        self.make_early_terminal_run("01-plan", phase="PLAN", error_code="PLAN_INCOMPLETE", status="BLOCKED")
+        self.write_phase(self.run_dir, "03-figma", phase="FIGMA", status="SKIPPED", complexity="Simple")
+        self.assert_error_code("invalid_phase_topology")
+
+    def test_early_terminal_failure_rejects_summary_with_wrong_error_phase(self) -> None:
+        self.make_early_terminal_run("02-context", phase="CONTEXT", error_code="ROLES_FILE_NOT_FOUND", status="BLOCKED")
+        self.update_manifest("07-summary", error_code="PLAN_INCOMPLETE")
+        self.assert_error_code("invalid_terminal_topology")
 
     def test_successful_use_case_create_passes(self) -> None:
         self.make_successful_run()
@@ -698,7 +769,7 @@ class RunValidationTests(unittest.TestCase):
     def test_missing_base_phase_is_rejected(self) -> None:
         self.make_successful_run()
         (self.run_dir / "02-context").rename(self.run_dir / "02-context-removed")
-        self.assert_error_code("missing_phase")
+        self.assert_error_code("invalid_phase_topology")
 
     def test_handoff_missing_field_is_rejected(self) -> None:
         self.make_successful_run()

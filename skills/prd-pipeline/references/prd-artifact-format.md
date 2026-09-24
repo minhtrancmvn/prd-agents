@@ -21,6 +21,10 @@ Each pipeline run writes durable artifacts outside repository source. Every pres
 
 `05-qa-attempt-2` exists only after another QA attempt is needed. A Complex request can include a further QA/repair cycle within its retry limit. `06-repair-skipped` is required when clean QA proceeds without repair or consolidation. `06-repair-attempt-1` exists only after a failed QA result triggers repair. `06-consolidation-attempt-1` is separate from normal retry accounting and exists only for optional one-pass consolidation. `07-summary` is required for every terminal run.
 
+## Early terminal layout
+
+A terminal `BLOCKED` or `FAILED` run before QA contains contiguous completed base phases from `00-load` through failed or blocked phase, then `07-summary`. It must not contain later base phases, QA, or Phase 6 artifacts. Summary error code must match failed or blocked final base phase. A successful summary still requires all base phases, QA, and valid Phase 6 topology.
+
 ## Required phase files
 
 | File | Format | Purpose |
