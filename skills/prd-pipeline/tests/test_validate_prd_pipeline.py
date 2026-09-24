@@ -439,11 +439,75 @@ class RunValidationTests(unittest.TestCase):
         self.update_manifest("05-qa-attempt-1", error_code="CHECKLIST_FAILED", qa_verdict="CHECKLIST_FAILED", next_agent="prd-author")
         self.assert_error_code("invalid_success_terminal_topology")
 
-    def test_exhausted_terminal_allows_failed_final_qa_topology(self) -> None:
-        self.make_successful_run()
-        self.update_manifest("05-qa-attempt-1", status="SUCCESS", error_code="CHECKLIST_FAILED", qa_verdict="CHECKLIST_FAILED", next_agent="prd-author", retry_count=1)
-        self.update_manifest("07-summary", status="FAILED", error_code="QA_RETRY_EXHAUSTED", qa_verdict="CHECKLIST_FAILED", retry_count=1)
+    def make_exhausted_run(self, complexity: str) -> Path:
+        retry_limit = 1 if complexity == "Simple" else 2
+        self.make_successful_run(qa_attempts=retry_limit + 1, complexity=complexity)
+        for path in (self.run_dir / "06-repair-skipped").iterdir():
+            path.unlink()
+        (self.run_dir / "06-repair-skipped").rmdir()
+        for attempt in range(1, retry_limit + 1):
+            self.update_manifest(
+                f"05-qa-attempt-{attempt}",
+                status="SUCCESS",
+                error_code="CHECKLIST_FAILED",
+                qa_verdict="CHECKLIST_FAILED",
+                next_agent="prd-author",
+            )
+            self.write_phase(
+                self.run_dir,
+                f"06-repair-attempt-{attempt}",
+                phase="REPAIR",
+                retry_count=attempt,
+                complexity=complexity,
+            )
+        self.update_manifest(
+            f"05-qa-attempt-{retry_limit + 1}",
+            status="SUCCESS",
+            error_code="CHECKLIST_FAILED",
+            qa_verdict="CHECKLIST_FAILED",
+            next_agent="prd-author",
+            retry_count=retry_limit,
+        )
+        self.update_manifest(
+            "07-summary",
+            status="FAILED",
+            error_code="QA_RETRY_EXHAUSTED",
+            qa_verdict="CHECKLIST_FAILED",
+            retry_count=retry_limit,
+        )
+        return self.run_dir
+
+    def test_simple_exhausted_terminal_allows_consumed_repair_topology(self) -> None:
+        self.make_exhausted_run("Simple")
         self.assertEqual(validator.validate_run(self.run_dir), [])
+
+    def test_complex_exhausted_terminal_allows_consumed_repair_topology(self) -> None:
+        self.make_exhausted_run("Complex")
+        self.assertEqual(validator.validate_run(self.run_dir), [])
+
+    def test_exhausted_terminal_rejects_no_repair_with_fabricated_retry_count(self) -> None:
+        self.make_successful_run()
+        self.update_manifest(
+            "05-qa-attempt-1",
+            status="SUCCESS",
+            error_code="CHECKLIST_FAILED",
+            qa_verdict="CHECKLIST_FAILED",
+            next_agent="prd-author",
+            retry_count=1,
+        )
+        self.update_manifest(
+            "07-summary",
+            status="FAILED",
+            error_code="QA_RETRY_EXHAUSTED",
+            qa_verdict="CHECKLIST_FAILED",
+            retry_count=1,
+        )
+        self.assert_error_code("invalid_failed_terminal_topology")
+
+    def test_exhausted_terminal_rejects_fabricated_summary_retry_count(self) -> None:
+        self.make_exhausted_run("Simple")
+        self.update_manifest("07-summary", retry_count=0)
+        self.assert_error_code("invalid_failed_terminal_topology")
 
     def test_consolidation_regression_terminal_allows_failed_final_qa_topology(self) -> None:
         self.make_successful_run(qa_attempts=2)
@@ -612,7 +676,7 @@ class RunValidationTests(unittest.TestCase):
         self.assert_valid_terminal_failure("RISK_ITEMS_FOUND")
 
     def test_qa_retry_exhausted_run_requires_failed_final_qa_topology(self) -> None:
-        self.test_exhausted_terminal_allows_failed_final_qa_topology()
+        self.test_simple_exhausted_terminal_allows_consumed_repair_topology()
 
     def test_consolidation_regression_run_requires_failed_final_qa_topology(self) -> None:
         self.test_consolidation_regression_terminal_allows_failed_final_qa_topology()

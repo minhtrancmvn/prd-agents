@@ -405,8 +405,6 @@ def _validate_qa_repair_sequence(
         if index < len(qa_numbers) and not is_consolidation_pass and f"06-repair-attempt-{index}" not in names:
             errors.append(_error(run_dir, "invalid_phase_topology", "failed QA requires matching repair attempt"))
         expected_retry_count = index - 1 if index < len(qa_numbers) and not is_consolidation_pass else len(repair_numbers)
-        if summary and summary.get("error_code") == "QA_RETRY_EXHAUSTED" and index == len(qa_numbers):
-            expected_retry_count = qa_manifest.get("retry_limit")
         if qa_manifest.get("retry_count") != expected_retry_count:
             errors.append(_error(run_dir / f"05-qa-attempt-{qa_number}" / "manifest.json", "invalid_retry_count", "QA retry_count must retain consumed repairs"))
     final_qa = manifests[f"05-qa-attempt-{qa_numbers[-1]}"]
@@ -420,11 +418,23 @@ def _validate_qa_repair_sequence(
         ):
             errors.append(_error(run_dir / "07-summary" / "manifest.json", "invalid_success_terminal_topology", "successful summary requires passing non-terminal final QA"))
     elif summary and summary.get("error_code") == "QA_RETRY_EXHAUSTED":
+        retry_limit = final_qa.get("retry_limit")
+        consumed_retries = len(repair_numbers)
         if not (
             final_qa.get("qa_verdict") == "CHECKLIST_FAILED"
-            and final_qa.get("retry_count") == final_qa.get("retry_limit")
+            and _is_nonnegative_int(retry_limit)
+            and consumed_retries == retry_limit
+            and len(qa_numbers) == retry_limit + 1
+            and final_qa.get("retry_count") == consumed_retries
+            and summary.get("retry_count") == final_qa.get("retry_count")
         ):
-            errors.append(_error(run_dir / "07-summary" / "manifest.json", "invalid_failed_terminal_topology", "retry exhaustion requires failed final QA at retry limit"))
+            errors.append(
+                _error(
+                    run_dir / "07-summary" / "manifest.json",
+                    "invalid_failed_terminal_topology",
+                    "retry exhaustion requires every retry to have a repair and QA recheck with matching final counts",
+                )
+            )
     elif summary and summary.get("error_code") == "CONSOLIDATION_REGRESSION":
         penultimate_qa = manifests.get(f"05-qa-attempt-{qa_numbers[-2]}") if len(qa_numbers) > 1 else None
         if not (
