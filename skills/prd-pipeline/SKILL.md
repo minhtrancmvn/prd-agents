@@ -250,9 +250,10 @@ Email Template -> prd-email-req-author
 ```text
 CHECKLIST_PASSED
 CHECKLIST_FAILED
+ROLES_FILE_NOT_FOUND
 ```
 
-4. Parse whole trimmed first line, not first token. Reject every unsupported/mixed/future status as `VALIDATION_FAILED` until Task 4 changes checker contract. Preserve full checker body in content artifact and normalize findings.
+4. Parse whole trimmed first line, not first token. Map `ROLES_FILE_NOT_FOUND` immediately to terminal `BLOCKED`. Reject every other unsupported/mixed/future status as `VALIDATION_FAILED` until Task 4 changes checker contract. Preserve full checker body in content artifact and normalize findings.
 
 **Artifact:** `05-qa-attempt-N/manifest.json` and `05-qa-attempt-N/content.md` with `qa_verdict`, all checker findings, current retry count/limit, consolidation count, and explicit ClickUp verification status/evidence.
 
@@ -269,7 +270,7 @@ DOCUMENT_NOT_FOUND -> terminal FAILED when Task 4 checker interface supports it
 anything else -> terminal VALIDATION_FAILED
 ```
 
-Current Task 3 checker dispatch accepts only the two documented current `CHECKLIST_*` statuses after preflight. `ROLES_FILE_NOT_FOUND`, `INPUT_INVALID`, and `DOCUMENT_NOT_FOUND` remain future five-status contract branches for Task 4. If `CHECKLIST_FAILED` has exhausted normal budget, terminal `FAILED` with `QA_RETRY_EXHAUSTED`; otherwise create repair artifact. Unsupported, mixed, agent-error, empty, or malformed output is terminal `FAILED` with `VALIDATION_FAILED`. Never combine a checklist verdict with blocking error.
+Current Task 3 checker dispatch accepts exact `CHECKLIST_*` statuses and current `ROLES_FILE_NOT_FOUND` after preflight. `INPUT_INVALID` and `DOCUMENT_NOT_FOUND` remain future five-status contract branches for Task 4. If `CHECKLIST_FAILED` has exhausted normal budget, terminal `FAILED` with `QA_RETRY_EXHAUSTED`; otherwise create repair artifact. Unsupported, mixed, agent-error, empty, or malformed output is terminal `FAILED` with `VALIDATION_FAILED`. Never combine a checklist verdict with blocking error.
 
 ### Phase 6: REPAIR AND RECHECK
 
@@ -283,9 +284,9 @@ Current Task 3 checker dispatch accepts only the two documented current `CHECKLI
 4. Require non-empty correction output. Verify exact target exists with `Read`. Record corrected self-check claims and full raw response.
 5. Increment `retry_count` only after author correction has returned and exact target verification succeeds. Never increment for a failed dispatch, a checker failure, or planned repair.
 6. Rerun Phase 5 with next QA attempt. If normal budget is exhausted after a failed checklist result, terminal `FAILED` with `QA_RETRY_EXHAUSTED`.
-7. Optional consolidation occurs only once after clean `CHECKLIST_PASSED`: create `06-consolidation-attempt-1`, set `consolidation_attempts: 1` without changing normal `retry_count`, run same author using consolidation recommendations, then rerun QA. If recheck regresses, terminal `FAILED` with `CONSOLIDATION_REGRESSION`; if it passes, record `consolidation=passed`. Do not create both skipped and consolidation artifacts for same path.
+7. Optional consolidation occurs only once after clean `CHECKLIST_PASSED`: create `06-consolidation-attempt-1`, set `consolidation_attempts: 1` without changing normal `retry_count`, run same author using consolidation recommendations, then create following QA recheck. If recheck regresses, terminal `FAILED` with `CONSOLIDATION_REGRESSION`; if it passes, record `consolidation=passed`. Consolidation may coexist with prior repair attempts or `06-repair-skipped`; it does not replace their canonical history.
 
-**Artifact:** `06-repair-skipped/manifest.json` and `06-repair-skipped/content.md` for no repair; `06-repair-attempt-N/manifest.json` and `06-repair-attempt-N/content.md` for correction; `06-consolidation-attempt-1/manifest.json` and `06-consolidation-attempt-1/content.md` for consolidation. Every pair records complete inputs/output, Read verification, and separate retry/consolidation counts.
+**Artifact:** `06-repair-skipped/manifest.json` and `06-repair-skipped/content.md` for clean QA without repair; `06-repair-attempt-N/manifest.json` and `06-repair-attempt-N/content.md` for correction; `06-consolidation-attempt-1/manifest.json` and `06-consolidation-attempt-1/content.md` for optional consolidation. Every pair records complete inputs/output, Read verification, and separate retry/consolidation counts.
 
 **Gate:** Required Phase 6 pair exists, correction succeeds at exact target, retry increment occurs only after correction, recheck reaches `CHECKLIST_PASSED`, normal retries remain within limit, and consolidation attempts are at most one.
 

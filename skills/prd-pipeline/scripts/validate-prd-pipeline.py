@@ -107,11 +107,10 @@ REQUIRED_PHASE_DIRS = {
     "07-summary",
 }
 
-REQUIRED_PHASE6_PREFIXES = (
-    "06-repair-skipped",
-    "06-repair-attempt-",
-    "06-consolidation-attempt-",
-)
+QA_DIRECTORY_PATTERN = re.compile(r"05-qa-attempt-(\d+)")
+REPAIR_DIRECTORY_PATTERN = re.compile(r"06-repair-attempt-(\d+)")
+CONSOLIDATION_DIRECTORY = "06-consolidation-attempt-1"
+REPAIR_SKIPPED_DIRECTORY = "06-repair-skipped"
 
 HANDOFF_FIELDS = (
     ("STATUS", "status"),
@@ -304,21 +303,26 @@ def _validate_manifest(
         errors.append(_error(path, "consolidation_attempts_exceeded", "consolidation_attempts must not exceed one"))
 
     complexity = manifest.get("complexity")
-    if complexity in {"Simple", "Complex"} and _is_nonnegative_int(retry_limit):
-        expected_limit = 1 if complexity == "Simple" else 2
+    if complexity in {"Simple", "Complex", "UNKNOWN"} and _is_nonnegative_int(retry_limit):
+        expected_limit = 1 if complexity == "Simple" else 2 if complexity == "Complex" else 0
         if retry_limit != expected_limit:
             errors.append(_error(path, "invalid_retry_limit", f"retry_limit must be {expected_limit} for {complexity}"))
     if _is_nonnegative_int(retry_count) and _is_nonnegative_int(retry_limit) and retry_count > retry_limit:
         errors.append(_error(path, "retry_count_exceeded", "retry_count must not exceed retry_limit"))
 
     if manifest.get("phase") == "QA" and manifest.get("qa_verdict") == "CHECKLIST_FAILED":
+        expected_author = {
+            "Use Case": "prd-author",
+            "Notification": "prd-noti-req-author",
+            "Email Template": "prd-email-req-author",
+        }.get(manifest.get("document_type"))
         if not (
             status == "SUCCESS"
             and manifest.get("error_code") == "CHECKLIST_FAILED"
             and manifest.get("terminal") is False
-            and manifest.get("next_agent") in {"prd-author", "prd-noti-req-author", "prd-email-req-author"}
+            and manifest.get("next_agent") == expected_author
         ):
-            errors.append(_error(path, "invalid_qa_repair_mapping", "CHECKLIST_FAILED QA must be non-terminal SUCCESS with CHECKLIST_FAILED and author next_agent"))
+            errors.append(_error(path, "invalid_qa_repair_mapping", "CHECKLIST_FAILED QA must map to its document-type author"))
     if manifest.get("terminal") is True:
         if status == "SUCCESS" and manifest.get("qa_verdict") != "CHECKLIST_PASSED":
             errors.append(_error(path, "terminal_success_without_checklist", "terminal success requires CHECKLIST_PASSED"))
@@ -326,6 +330,80 @@ def _validate_manifest(
             manifest.get("error_code") == "NONE" or manifest.get("next_agent") != "STOP"
         ):
             errors.append(_error(path, "invalid_terminal_failure", "terminal blocked/failed result needs error code and STOP next_agent"))
+
+
+def _validate_qa_repair_sequence(
+    run_dir: Path,
+    manifests: dict[str, dict[str, Any]],
+    errors: list[ValidationError],
+) -> None:
+    names = set(manifests)
+    qa_numbers: list[int] = []
+    repair_numbers: list[int] = []
+    malformed = []
+    for name in names:
+        if name.startswith("05-qa-attempt-"):
+            match = QA_DIRECTORY_PATTERN.fullmatch(name)
+            if match is None:
+                malformed.append(name)
+            else:
+                qa_numbers.append(int(match.group(1)))
+        if name.startswith("06-repair-attempt-"):
+            match = REPAIR_DIRECTORY_PATTERN.fullmatch(name)
+            if match is None:
+                malformed.append(name)
+            else:
+                repair_numbers.append(int(match.group(1)))
+    for name in malformed:
+        errors.append(_error(run_dir / name, "invalid_phase_topology", "phase directory name is malformed"))
+    qa_numbers.sort()
+    repair_numbers.sort()
+    if qa_numbers != list(range(1, len(qa_numbers) + 1)):
+        errors.append(_error(run_dir, "invalid_phase_topology", "QA attempts must be contiguous and start at one"))
+    if repair_numbers != list(range(1, len(repair_numbers) + 1)):
+        errors.append(_error(run_dir, "invalid_phase_topology", "repair attempts must be contiguous and start at one"))
+    if not qa_numbers:
+        return
+    has_skipped = REPAIR_SKIPPED_DIRECTORY in names
+    has_consolidation = CONSOLIDATION_DIRECTORY in names
+    other_phase6 = [
+        name for name in names if name.startswith("06-") and name not in {
+            REPAIR_SKIPPED_DIRECTORY,
+            CONSOLIDATION_DIRECTORY,
+            *(f"06-repair-attempt-{number}" for number in repair_numbers),
+        }
+    ]
+    for name in other_phase6:
+        errors.append(_error(run_dir / name, "invalid_phase_topology", "unknown Phase 6 directory"))
+    if has_skipped and repair_numbers:
+        errors.append(_error(run_dir, "invalid_phase_topology", "repair-skipped cannot coexist with repair attempts"))
+    if has_skipped and manifests[REPAIR_SKIPPED_DIRECTORY].get("status") != "SKIPPED":
+        errors.append(_error(run_dir / REPAIR_SKIPPED_DIRECTORY / "manifest.json", "invalid_phase_topology", "repair-skipped must have SKIPPED status"))
+    expected_repairs = len(qa_numbers) - 1 - int(has_consolidation)
+    if len(repair_numbers) != expected_repairs:
+        errors.append(_error(run_dir, "invalid_phase_topology", "repair count must equal failed QA attempts"))
+    if not repair_numbers and expected_repairs == 0 and not has_skipped and not has_consolidation:
+        errors.append(_error(run_dir, "invalid_phase_topology", "clean QA requires repair-skipped or consolidation artifact"))
+    for index, qa_number in enumerate(qa_numbers, start=1):
+        qa_manifest = manifests[f"05-qa-attempt-{qa_number}"]
+        verdict = qa_manifest.get("qa_verdict")
+        is_consolidation_pass = has_consolidation and index == len(qa_numbers) - 1
+        if index < len(qa_numbers) and verdict != ("CHECKLIST_PASSED" if is_consolidation_pass else "CHECKLIST_FAILED"):
+            errors.append(_error(run_dir / f"05-qa-attempt-{qa_number}" / "manifest.json", "invalid_qa_sequence", "QA sequence has invalid verdict"))
+        if index < len(qa_numbers) and not is_consolidation_pass and f"06-repair-attempt-{index}" not in names:
+            errors.append(_error(run_dir, "invalid_phase_topology", "failed QA requires matching repair attempt"))
+    final_qa = manifests[f"05-qa-attempt-{qa_numbers[-1]}"]
+    if final_qa.get("qa_verdict") != "CHECKLIST_PASSED":
+        errors.append(_error(run_dir / f"05-qa-attempt-{qa_numbers[-1]}" / "manifest.json", "final_qa_not_passed", "final QA attempt must be CHECKLIST_PASSED"))
+    summary = manifests.get("07-summary")
+    if summary and summary.get("status") == "SUCCESS" and summary.get("qa_verdict") != "CHECKLIST_PASSED":
+        errors.append(_error(run_dir / "07-summary" / "manifest.json", "terminal_success_without_checklist", "successful summary requires CHECKLIST_PASSED"))
+    if has_consolidation:
+        consolidation = manifests[CONSOLIDATION_DIRECTORY]
+        if consolidation.get("consolidation_attempts") != 1:
+            errors.append(_error(run_dir / CONSOLIDATION_DIRECTORY / "manifest.json", "invalid_phase_topology", "consolidation attempt must record count one"))
+        if qa_numbers[-1] < 2:
+            errors.append(_error(run_dir / CONSOLIDATION_DIRECTORY / "manifest.json", "invalid_phase_topology", "consolidation requires following QA recheck"))
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -351,9 +429,8 @@ def validate_run(run_dir: Path, repository_root: Path | None = None) -> list[Val
     for required_phase in sorted(REQUIRED_PHASE_DIRS - phase_names):
         code = "missing_summary" if required_phase == "07-summary" else "missing_phase"
         errors.append(_error(resolved_run_dir / required_phase, code, "required phase directory is missing"))
-    if not any(name.startswith(REQUIRED_PHASE6_PREFIXES) for name in phase_names):
-        errors.append(_error(resolved_run_dir / "06-repair-skipped", "missing_phase", "required Phase 6 artifact directory is missing"))
 
+    manifests: dict[str, dict[str, Any]] = {}
     for phase_dir in phase_dirs:
         manifest_path = phase_dir / "manifest.json"
         content_path = phase_dir / "content.md"
@@ -371,6 +448,7 @@ def validate_run(run_dir: Path, repository_root: Path | None = None) -> list[Val
             errors.append(_error(manifest_path, "manifest_not_object", "manifest JSON must be an object"))
             continue
         manifest = parsed
+        manifests[phase_dir.name] = manifest
         missing_keys = REQUIRED_MANIFEST_KEYS - manifest.keys()
         for key in sorted(missing_keys):
             errors.append(_error(manifest_path, "missing_manifest_key", f"missing required key: {key}"))
@@ -383,6 +461,7 @@ def validate_run(run_dir: Path, repository_root: Path | None = None) -> list[Val
             errors.append(_error(content_path, "missing_skipped_figma_reason", "skipped Figma content requires a non-empty reason"))
         if phase_dir.name == "06-repair-skipped" and manifest.get("status") == "SKIPPED" and not body:
             errors.append(_error(content_path, "missing_skipped_repair_reason", "skipped repair content requires a non-empty reason"))
+    _validate_qa_repair_sequence(resolved_run_dir, manifests, errors)
     return _sorted(errors)
 
 

@@ -199,7 +199,7 @@ class RunValidationTests(unittest.TestCase):
         phase_dir = run_dir / directory
         phase_dir.mkdir(parents=True, exist_ok=True)
         if retry_limit is None:
-            retry_limit = 1 if complexity != "Complex" else 2
+            retry_limit = 0 if complexity is None else 1 if complexity != "Complex" else 2
         manifest = {
             "schema_version": "1.0",
             "run_id": "prd-test-run",
@@ -258,11 +258,12 @@ class RunValidationTests(unittest.TestCase):
         qa_attempts: int = 1,
         complexity: str | None = None,
     ) -> Path:
-        self.write_phase(self.run_dir, "00-load", phase="LOAD", document_type=document_type, mode=mode, complexity=complexity)
-        self.write_phase(self.run_dir, "01-plan", phase="PLAN", document_type=document_type, mode=mode, complexity=complexity)
-        self.write_phase(self.run_dir, "02-context", phase="CONTEXT", document_type=document_type, mode=mode, complexity=complexity)
-        self.write_phase(self.run_dir, "03-figma", phase="FIGMA", status="SKIPPED", document_type=document_type, mode=mode, complexity=complexity)
-        self.write_phase(self.run_dir, "04-author", phase="AUTHOR", document_type=document_type, mode=mode, complexity=complexity)
+        resolved_complexity = complexity or "Simple"
+        self.write_phase(self.run_dir, "00-load", phase="LOAD", document_type=document_type, mode=mode, complexity="UNKNOWN", retry_limit=0)
+        self.write_phase(self.run_dir, "01-plan", phase="PLAN", document_type=document_type, mode=mode, complexity=resolved_complexity)
+        self.write_phase(self.run_dir, "02-context", phase="CONTEXT", document_type=document_type, mode=mode, complexity=resolved_complexity)
+        self.write_phase(self.run_dir, "03-figma", phase="FIGMA", status="SKIPPED", document_type=document_type, mode=mode, complexity=resolved_complexity)
+        self.write_phase(self.run_dir, "04-author", phase="AUTHOR", document_type=document_type, mode=mode, complexity=resolved_complexity)
         for attempt in range(1, qa_attempts + 1):
             self.write_phase(
                 self.run_dir,
@@ -271,7 +272,7 @@ class RunValidationTests(unittest.TestCase):
                 document_type=document_type,
                 mode=mode,
                 qa_verdict="CHECKLIST_PASSED",
-                complexity=complexity,
+                complexity=resolved_complexity,
             )
         self.write_phase(
             self.run_dir,
@@ -281,7 +282,7 @@ class RunValidationTests(unittest.TestCase):
             document_type=document_type,
             mode=mode,
             qa_verdict="CHECKLIST_PASSED",
-            complexity=complexity,
+            complexity=resolved_complexity,
         )
         self.write_phase(
             self.run_dir,
@@ -290,7 +291,7 @@ class RunValidationTests(unittest.TestCase):
             document_type=document_type,
             mode=mode,
             qa_verdict="CHECKLIST_PASSED",
-            complexity=complexity,
+            complexity=resolved_complexity,
         )
         return self.run_dir
 
@@ -362,7 +363,7 @@ class RunValidationTests(unittest.TestCase):
         for path in (self.run_dir / "06-repair-skipped").iterdir():
             path.unlink()
         (self.run_dir / "06-repair-skipped").rmdir()
-        self.write_phase(self.run_dir, "06-repair-attempt-1", phase="REPAIR", retry_count=1)
+        self.write_phase(self.run_dir, "06-repair-attempt-1", phase="REPAIR", retry_count=1, complexity="Simple")
         self.assertEqual(validator.validate_run(self.run_dir), [])
 
     def test_repair_skipped_phase_is_required(self) -> None:
@@ -370,11 +371,11 @@ class RunValidationTests(unittest.TestCase):
         for path in (self.run_dir / "06-repair-skipped").iterdir():
             path.unlink()
         (self.run_dir / "06-repair-skipped").rmdir()
-        self.assert_error_code("missing_phase")
+        self.assert_error_code("invalid_phase_topology")
 
     def test_consolidation_attempt_has_separate_phase_path_and_count(self) -> None:
         self.make_successful_run(qa_attempts=2)
-        self.update_manifest("06-repair-skipped", status="SUCCESS_WITH_WARNINGS", consolidation_attempts=1)
+        self.update_manifest("06-repair-skipped", consolidation_attempts=1)
         self.write_phase(
             self.run_dir,
             "06-consolidation-attempt-1",
@@ -392,9 +393,30 @@ class RunValidationTests(unittest.TestCase):
             status="SUCCESS",
             error_code="CHECKLIST_FAILED",
             qa_verdict="CHECKLIST_FAILED",
-            next_agent="prd-next-agent",
+            next_agent="prd-noti-req-author",
         )
         self.assert_error_code("invalid_qa_repair_mapping")
+
+    def test_two_repair_sequence_requires_contiguous_qa_and_repair_attempts(self) -> None:
+        self.make_successful_run(qa_attempts=3, complexity="Complex")
+        for path in (self.run_dir / "06-repair-skipped").iterdir():
+            path.unlink()
+        (self.run_dir / "06-repair-skipped").rmdir()
+        for attempt in (1, 2):
+            self.update_manifest(
+                f"05-qa-attempt-{attempt}",
+                status="SUCCESS",
+                error_code="CHECKLIST_FAILED",
+                qa_verdict="CHECKLIST_FAILED",
+                next_agent="prd-author",
+            )
+            self.write_phase(self.run_dir, f"06-repair-attempt-{attempt}", phase="REPAIR", retry_count=attempt, complexity="Complex")
+        self.assertEqual(validator.validate_run(self.run_dir), [])
+
+    def test_qa_attempt_gap_is_rejected(self) -> None:
+        self.make_successful_run(qa_attempts=2)
+        (self.run_dir / "05-qa-attempt-2").rename(self.run_dir / "05-qa-attempt-3")
+        self.assert_error_code("invalid_phase_topology")
 
     def test_relative_target_path_is_rejected(self) -> None:
         self.make_successful_run()
@@ -473,6 +495,12 @@ class RunValidationTests(unittest.TestCase):
         self.make_successful_run()
         self.update_manifest("04-author", status="UNKNOWN")
         self.assert_error_code("unknown_status")
+
+    def test_unknown_complexity_uses_zero_retry_limit(self) -> None:
+        self.make_successful_run()
+        self.assertEqual(validator.validate_run(self.run_dir), [])
+        self.update_manifest("00-load", retry_limit=1)
+        self.assert_error_code("invalid_retry_limit")
 
     def test_simple_complexity_uses_one_retry_limit(self) -> None:
         self.make_successful_run(complexity="Simple")
