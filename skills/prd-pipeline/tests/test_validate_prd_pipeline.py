@@ -434,9 +434,13 @@ class SpecialistAgentContractTests(unittest.TestCase):
         skill_text = SKILL_PATH.read_text(encoding="utf-8")
         contract_text = CONTRACT_PATH.read_text(encoding="utf-8")
         readme_text = README_PATH.read_text(encoding="utf-8")
-        self.assertIn("When the final QA verdict is `CHECKLIST_PASSED`, a Phase 6 pair", skill_text)
+        self.assertIn("When the final QA verdict is `CHECKLIST_PASSED`, a Phase 6 artifact exists", skill_text)
         self.assertIn("only when the final QA verdict is `CHECKLIST_PASSED`", contract_text)
         self.assertIn("only a run whose final QA verdict is `CHECKLIST_PASSED` needs a Phase 6", readme_text)
+        for label, text in (("SKILL", skill_text), ("contract", contract_text), ("README", readme_text)):
+            with self.subTest(document=label):
+                self.assertIn("06-repair-attempt-N", text)
+                self.assertIn("06-consolidation-attempt-1", text)
 
     def test_artifact_format_documents_repair_attempt_range(self) -> None:
         text = ARTIFACT_FORMAT_PATH.read_text(encoding="utf-8")
@@ -821,6 +825,16 @@ class RunValidationTests(unittest.TestCase):
         (self.run_dir / "06-repair-skipped").rmdir()
         self.assert_error_code("invalid_phase_topology")
 
+    def test_passing_final_verdict_accepts_prior_repair_attempts_as_phase_six(self) -> None:
+        """Locked rule: a Phase 6 artifact is repair-skipped, consolidation, or a prior repair attempt."""
+        self.make_repair_record_run()
+        self.assertFalse((self.run_dir / "06-repair-skipped").exists())
+        self.assertEqual(validator.validate_run(self.run_dir), [])
+        for path in (self.run_dir / "06-repair-attempt-1").iterdir():
+            path.unlink()
+        (self.run_dir / "06-repair-attempt-1").rmdir()
+        self.assert_error_code("invalid_phase_topology")
+
     def test_consolidation_attempt_has_separate_phase_path_and_count(self) -> None:
         self.make_successful_run(qa_attempts=2)
         self.update_manifest("06-repair-skipped", consolidation_attempts=1)
@@ -1045,6 +1059,41 @@ class RunValidationTests(unittest.TestCase):
         self.make_successful_run()
         self.update_manifest("05-qa-attempt-1", status="FAILED", error_code="INPUT_INVALID", next_agent="STOP")
         self.update_manifest("07-summary", status="FAILED", error_code="VALIDATION_FAILED", next_agent="STOP")
+        self.assert_error_code("invalid_failed_terminal_topology")
+
+    def make_qa_validation_failure_run(self) -> Path:
+        """Build a QA-stage VALIDATION_FAILED tree with no Phase 6 artifact."""
+        self.make_successful_run()
+        for path in (self.run_dir / "06-repair-skipped").iterdir():
+            path.unlink()
+        (self.run_dir / "06-repair-skipped").rmdir()
+        self.update_manifest(
+            "05-qa-attempt-1",
+            status="FAILED",
+            error_code="VALIDATION_FAILED",
+            qa_verdict="NOT_RUN",
+            next_agent="STOP",
+        )
+        self.update_manifest(
+            "07-summary",
+            status="FAILED",
+            error_code="VALIDATION_FAILED",
+            qa_verdict="NOT_RUN",
+        )
+        return self.run_dir
+
+    def test_qa_validation_failure_without_phase_six_validates(self) -> None:
+        self.make_qa_validation_failure_run()
+        self.assertEqual(validator.validate_run(self.run_dir), [])
+
+    def test_qa_validation_failure_requires_stop_summary(self) -> None:
+        self.make_qa_validation_failure_run()
+        self.update_manifest("07-summary", next_agent="prd-pipeline")
+        self.assert_error_code("invalid_failed_terminal_topology")
+
+    def test_qa_validation_failure_with_phase_six_pair_is_rejected(self) -> None:
+        self.make_qa_validation_failure_run()
+        self.write_phase(self.run_dir, "06-repair-skipped", phase="REPAIR", status="SKIPPED")
         self.assert_error_code("invalid_failed_terminal_topology")
 
     def test_qa_path_rejects_non_successful_base_phase(self) -> None:

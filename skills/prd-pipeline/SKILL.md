@@ -280,7 +280,7 @@ If `CHECKLIST_FAILED` has exhausted normal budget, terminal `FAILED` with `QA_RE
 
 **Actions:**
 
-1. If QA is `CHECKLIST_PASSED` and no consolidation is requested, create canonical `06-repair-skipped/manifest.json` and `06-repair-skipped/content.md` with `STATUS: SKIPPED`, `phase: REPAIR`, `next_agent: prd-pipeline`, `retry_count` unchanged, and explicit reason. This pair is required before REPORT.
+1. If QA is `CHECKLIST_PASSED`, no consolidation is requested, and no `06-repair-attempt-N` was produced earlier in the run, create canonical `06-repair-skipped/manifest.json` and `06-repair-skipped/content.md` with `STATUS: SKIPPED`, `phase: REPAIR`, `next_agent: prd-pipeline`, `retry_count` unchanged, and explicit reason. This pair is required before REPORT when the run reached a passing verdict without repair.
 2. Enter repair only after a QA result mapped exactly to `status: SUCCESS`, `qa_verdict: CHECKLIST_FAILED`, `error_code: CHECKLIST_FAILED`, `terminal: false`, and selected author `next_agent`, and only when `retry_count < retry_limit`.
 3. Create `06-repair-attempt-N` artifacts before dispatch. Give same selected author complete original author inputs plus full checker body, exact target path, current document content, and a correction-only instruction. Do not truncate or summarize checker findings.
 4. Require non-empty correction output. Verify exact target exists with `Read`. Record corrected self-check claims and full raw response.
@@ -290,7 +290,7 @@ If `CHECKLIST_FAILED` has exhausted normal budget, terminal `FAILED` with `QA_RE
 
 **Artifact:** `06-repair-skipped/manifest.json` and `06-repair-skipped/content.md` for clean QA without repair; `06-repair-attempt-N/manifest.json` and `06-repair-attempt-N/content.md` for correction; `06-consolidation-attempt-1/manifest.json` and `06-consolidation-attempt-1/content.md` for optional consolidation. Every pair records complete inputs/output, Read verification, and separate retry/consolidation counts.
 
-**Gate:** When the final QA verdict is `CHECKLIST_PASSED`, a Phase 6 pair (`06-repair-skipped` or `06-consolidation-attempt-1`) exists; correction succeeds at exact target; retry increment occurs only after correction; recheck reaches `CHECKLIST_PASSED`; normal retries remain within limit; and consolidation attempts are at most one. A blocking QA terminal before a passing verdict carries no Phase 6 artifact.
+**Gate:** When the final QA verdict is `CHECKLIST_PASSED`, a Phase 6 artifact exists — `06-repair-skipped`, `06-consolidation-attempt-1`, or the `06-repair-attempt-N` pairs already recorded for this run; correction succeeds at exact target; retry increment occurs only after correction; recheck reaches `CHECKLIST_PASSED`; normal retries remain within limit; and consolidation attempts are at most one. A blocking QA terminal before a passing verdict carries no Phase 6 artifact.
 
 **Failure:** Author error, empty correction, or missing target is terminal typed author failure. Exhausted normal budget is `QA_RETRY_EXHAUSTED`. Consolidation regression is `CONSOLIDATION_REGRESSION`. Do not return to author outside this state machine.
 

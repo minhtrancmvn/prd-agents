@@ -680,8 +680,22 @@ def _validate_qa_repair_sequence(
                 )
             )
     elif summary is not None and summary.get("error_code") == "VALIDATION_FAILED":
+        # VALIDATION_FAILED terminates two distinct stages. REPORT stage: a clean passing
+        # non-terminal final QA reached REPORT and the REPORT validator rejected the summary.
+        # QA stage: the checker returned unsupported, mixed, empty, or malformed output, so QA
+        # failed with VALIDATION_FAILED, never reached a passing verdict, and produced no Phase 6
+        # artifact. Accept either shape; reject only when neither holds.
+        report_stage_failure = clean_final_qa
+        qa_stage_failure = (
+            final_qa.get("status") == "FAILED"
+            and final_qa.get("error_code") == "VALIDATION_FAILED"
+            and final_qa.get("terminal") is False
+            and not repair_numbers
+            and not has_skipped
+            and not has_consolidation
+        )
         if not (
-            clean_final_qa
+            (report_stage_failure or qa_stage_failure)
             and summary.get("status") == "FAILED"
             and summary.get("terminal") is True
             and summary.get("next_agent") == "STOP"
@@ -690,7 +704,7 @@ def _validate_qa_repair_sequence(
                 _error(
                     run_dir / "07-summary" / "manifest.json",
                     "invalid_failed_terminal_topology",
-                    "report validation failure requires passing non-terminal final QA and a terminal STOP summary",
+                    "report validation failure requires passing non-terminal final QA or a Phase-6-free QA validation failure, and a terminal STOP summary",
                 )
             )
     elif summary is not None and clean_final_qa:
