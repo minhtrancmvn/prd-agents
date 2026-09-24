@@ -67,6 +67,18 @@ SKILL_REQUIRED_REFERENCES = {
     "validate-prd-pipeline.py run --run-dir",
 }
 
+REPOSITORY_ROOT = Path(__file__).parents[3]
+ORCHESTRATOR_PATH = REPOSITORY_ROOT / "agents" / "prd-orchestrator.md"
+FIGMA_READER_PATH = REPOSITORY_ROOT / "agents" / "prd-figma-reader.md"
+CHECKER_PATH = REPOSITORY_ROOT / "agents" / "prd-consistency-checker.md"
+CHECKER_FIRST_LINE_STATUSES = {
+    "CHECKLIST_PASSED",
+    "CHECKLIST_FAILED",
+    "INPUT_INVALID",
+    "DOCUMENT_NOT_FOUND",
+    "ROLES_FILE_NOT_FOUND",
+}
+
 
 spec = importlib.util.spec_from_file_location("validate_prd_pipeline", VALIDATOR_PATH)
 if spec is None or spec.loader is None:
@@ -171,6 +183,38 @@ class PackageValidationTests(unittest.TestCase):
             {term for term in SKILL_REQUIRED_REFERENCES if term not in skill_text},
             set(),
         )
+
+
+class SpecialistAgentContractTests(unittest.TestCase):
+    def test_legacy_orchestrator_routes_full_runs_to_prd_pipeline(self) -> None:
+        text = ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+        self.assertIn("`prd-pipeline` is the executable coordinator", text)
+
+    def test_figma_reader_distinguishes_sparse_data_from_tool_failure(self) -> None:
+        text = FIGMA_READER_PATH.read_text(encoding="utf-8")
+        self.assertIn("valid sparse result", text)
+
+    def test_figma_reader_reports_source_traceability(self) -> None:
+        text = FIGMA_READER_PATH.read_text(encoding="utf-8")
+        for field in ("Source URL", "Node ID", "Screens Analysed", "Unresolved Ambiguities"):
+            with self.subTest(field=field):
+                self.assertIn(field, text)
+
+    def test_checker_accepts_workspace_root_and_external_verification(self) -> None:
+        text = CHECKER_PATH.read_text(encoding="utf-8")
+        self.assertIn("Workspace root", text)
+        self.assertIn("External ClickUp verification evidence", text)
+
+    def test_checker_reports_not_checked_without_live_evidence(self) -> None:
+        text = CHECKER_PATH.read_text(encoding="utf-8")
+        self.assertIn("NOT_CHECKED", text)
+
+    def test_checker_declares_exclusive_first_line_statuses(self) -> None:
+        text = CHECKER_PATH.read_text(encoding="utf-8")
+        self.assertIn("exactly one", text)
+        for status in CHECKER_FIRST_LINE_STATUSES:
+            with self.subTest(status=status):
+                self.assertIn(status, text)
 
 
 class RunValidationTests(unittest.TestCase):
