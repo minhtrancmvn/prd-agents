@@ -87,16 +87,19 @@ class RunValidationTests(unittest.TestCase):
         phase: str,
         status: str = "SUCCESS",
         error_code: str = "NONE",
-        target_path: str = "/workspace/prd/reset-password.md",
+        target_path: object = "/workspace/prd/reset-password.md",
         document_type: str = "Use Case",
         mode: str = "CREATE",
         retry_count: int = 0,
-        retry_limit: int = 1,
+        retry_limit: int | None = None,
         consolidation_attempts: int = 0,
         qa_verdict: str = "NOT_RUN",
+        complexity: str | None = None,
     ) -> None:
         phase_dir = run_dir / directory
         phase_dir.mkdir(parents=True, exist_ok=True)
+        if retry_limit is None:
+            retry_limit = 1 if complexity != "Complex" else 2
         manifest = {
             "schema_version": "1.0",
             "run_id": "prd-test-run",
@@ -108,6 +111,7 @@ class RunValidationTests(unittest.TestCase):
             "mode": mode,
             "target_path": target_path,
             "artifact_dir": str(run_dir.resolve()),
+            **({"complexity": complexity} if complexity is not None else {}),
             "completed_checks": ["fixture check"],
             "unresolved_items": [],
             "next_agent": "prd-next-agent" if not directory.startswith("07-") else "STOP",
@@ -129,12 +133,13 @@ class RunValidationTests(unittest.TestCase):
         document_type: str = "Use Case",
         mode: str = "CREATE",
         qa_attempts: int = 1,
+        complexity: str | None = None,
     ) -> Path:
-        self.write_phase(self.run_dir, "00-load", phase="LOAD", document_type=document_type, mode=mode)
-        self.write_phase(self.run_dir, "01-plan", phase="PLAN", document_type=document_type, mode=mode)
-        self.write_phase(self.run_dir, "02-context", phase="CONTEXT", document_type=document_type, mode=mode)
-        self.write_phase(self.run_dir, "03-figma", phase="FIGMA", status="SKIPPED", document_type=document_type, mode=mode)
-        self.write_phase(self.run_dir, "04-author", phase="AUTHOR", document_type=document_type, mode=mode)
+        self.write_phase(self.run_dir, "00-load", phase="LOAD", document_type=document_type, mode=mode, complexity=complexity)
+        self.write_phase(self.run_dir, "01-plan", phase="PLAN", document_type=document_type, mode=mode, complexity=complexity)
+        self.write_phase(self.run_dir, "02-context", phase="CONTEXT", document_type=document_type, mode=mode, complexity=complexity)
+        self.write_phase(self.run_dir, "03-figma", phase="FIGMA", status="SKIPPED", document_type=document_type, mode=mode, complexity=complexity)
+        self.write_phase(self.run_dir, "04-author", phase="AUTHOR", document_type=document_type, mode=mode, complexity=complexity)
         for attempt in range(1, qa_attempts + 1):
             self.write_phase(
                 self.run_dir,
@@ -143,6 +148,7 @@ class RunValidationTests(unittest.TestCase):
                 document_type=document_type,
                 mode=mode,
                 qa_verdict="CHECKLIST_PASSED",
+                complexity=complexity,
             )
         self.write_phase(
             self.run_dir,
@@ -151,6 +157,7 @@ class RunValidationTests(unittest.TestCase):
             document_type=document_type,
             mode=mode,
             qa_verdict="CHECKLIST_PASSED",
+            complexity=complexity,
         )
         return self.run_dir
 
@@ -199,20 +206,44 @@ class RunValidationTests(unittest.TestCase):
         (self.run_dir / "03-figma" / "content.md").unlink()
         self.assert_error_code("missing_content")
 
+    def test_non_string_falsy_target_path_is_rejected(self) -> None:
+        for value in (None, False, 0, [], {}):
+            with self.subTest(value=value):
+                self.make_successful_run()
+                self.update_manifest("04-author", target_path=value)
+                self.assert_error_code("invalid_target_path")
+                self.run_dir = Path(self.temp_dir.name) / f"run-{len(list(Path(self.temp_dir.name).iterdir()))}"
+
+    def test_empty_string_target_path_is_allowed(self) -> None:
+        self.make_successful_run()
+        self.update_manifest("04-author", target_path="")
+        self.assertEqual(validator.validate_run(self.run_dir), [])
+
     def test_unknown_status_is_rejected(self) -> None:
         self.make_successful_run()
         self.update_manifest("04-author", status="UNKNOWN")
         self.assert_error_code("unknown_status")
 
+    def test_simple_complexity_uses_one_retry_limit(self) -> None:
+        self.make_successful_run(complexity="Simple")
+        self.assertEqual(validator.validate_run(self.run_dir), [])
+        self.update_manifest("05-qa-attempt-1", retry_limit=2)
+        self.assert_error_code("invalid_retry_limit")
+
+    def test_complex_complexity_uses_two_retry_limit(self) -> None:
+        self.make_successful_run(complexity="Complex")
+        self.assertEqual(validator.validate_run(self.run_dir), [])
+        self.update_manifest("05-qa-attempt-1", retry_limit=1)
+        self.assert_error_code("invalid_retry_limit")
+
     def test_simple_retry_count_above_one_is_rejected(self) -> None:
-        self.make_successful_run()
+        self.make_successful_run(complexity="Simple")
         self.update_manifest("05-qa-attempt-1", retry_count=2)
         self.assert_error_code("retry_count_exceeded")
 
     def test_complex_retry_count_above_two_is_rejected(self) -> None:
-        self.make_successful_run()
-        self.update_manifest("01-plan", complexity="Complex")
-        self.update_manifest("05-qa-attempt-1", retry_count=3, retry_limit=2)
+        self.make_successful_run(complexity="Complex")
+        self.update_manifest("05-qa-attempt-1", retry_count=3)
         self.assert_error_code("retry_count_exceeded")
 
     def test_two_consolidation_attempts_are_rejected(self) -> None:

@@ -235,7 +235,9 @@ def _validate_manifest(phase_dir: Path, manifest: dict[str, Any], errors: list[V
     if not isinstance(artifact_dir, str) or not Path(artifact_dir).is_absolute():
         errors.append(_error(path, "relative_artifact_dir", "artifact_dir must be absolute"))
     target_path = manifest.get("target_path")
-    if target_path and (not isinstance(target_path, str) or not Path(target_path).is_absolute()):
+    if not isinstance(target_path, str):
+        errors.append(_error(path, "invalid_target_path", "target_path must be a string or empty"))
+    elif target_path and not Path(target_path).is_absolute():
         errors.append(_error(path, "relative_target_path", "target_path must be absolute"))
     retry_count = manifest.get("retry_count")
     retry_limit = manifest.get("retry_limit")
