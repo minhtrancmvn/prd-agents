@@ -109,6 +109,7 @@ README_REQUIRED_STATUS_SIGNALS = {
 ORCHESTRATOR_PATH = REPOSITORY_ROOT / "agents" / "prd-orchestrator.md"
 FIGMA_READER_PATH = REPOSITORY_ROOT / "agents" / "prd-figma-reader.md"
 CHECKER_PATH = REPOSITORY_ROOT / "agents" / "prd-consistency-checker.md"
+SHARED_STANDARDS_PATH = REPOSITORY_ROOT / "prd-shared-authoring-standards.md"
 CHECKER_FIRST_LINE_STATUSES = {
     "CHECKLIST_PASSED",
     "CHECKLIST_FAILED",
@@ -313,6 +314,13 @@ class SpecialistAgentContractTests(unittest.TestCase):
             "Exactly one status appears as first line, with no preceding text.",
             text,
         )
+
+    def test_shared_standards_use_pipeline_compatible_checker_handoff(self) -> None:
+        text = SHARED_STANDARDS_PATH.read_text(encoding="utf-8")
+        self.assertIn("signal the caller", text)
+        self.assertIn("`prd-pipeline` invokes `prd-consistency-checker`", text)
+        self.assertIn("standalone authors provide the same handoff to their caller", text)
+        self.assertNotIn("signal the orchestrator", text)
 
     def test_pipeline_accepts_and_maps_all_checker_statuses(self) -> None:
         text = SKILL_PATH.read_text(encoding="utf-8")
@@ -759,6 +767,54 @@ class RunValidationTests(unittest.TestCase):
         self.make_successful_run()
         self.update_manifest("05-qa-attempt-1", error_code="CHECKLIST_FAILED", qa_verdict="CHECKLIST_FAILED", next_agent="prd-author")
         self.assert_error_code("invalid_success_terminal_topology")
+
+    def test_clean_qa_topology_rejects_non_success_summary_statuses(self) -> None:
+        for status in ("SKIPPED", "SUCCESS_WITH_WARNINGS"):
+            with self.subTest(status=status):
+                self.make_successful_run()
+                self.update_manifest("07-summary", status=status)
+                self.assert_error_code("invalid_success_terminal_topology")
+                self.run_dir = Path(self.temp_dir.name) / f"run-{status}"
+
+    def test_qa_path_rejects_unknown_and_malformed_phase_directories(self) -> None:
+        for directory in ("08-unapproved", "05-qa-attempt-01", "06-repair-attempt-01"):
+            with self.subTest(directory=directory):
+                self.make_successful_run()
+                self.write_phase(self.run_dir, directory, phase="QA", complexity="Simple")
+                self.assert_error_code("invalid_phase_topology")
+                self.run_dir = Path(self.temp_dir.name) / f"run-{directory}"
+
+    def test_canonical_directories_require_matching_phase_and_number(self) -> None:
+        self.make_successful_run()
+        self.write_phase(self.run_dir, "06-repair-attempt-1", phase="REPAIR", retry_count=1, complexity="Simple")
+        self.write_phase(
+            self.run_dir,
+            "06-consolidation-attempt-1",
+            phase="REPAIR",
+            consolidation_attempts=1,
+            complexity="Simple",
+        )
+        expected_bindings = {
+            "00-load": ("LOAD", 0),
+            "01-plan": ("PLAN", 1),
+            "02-context": ("CONTEXT", 2),
+            "03-figma": ("FIGMA", 3),
+            "04-author": ("AUTHOR", 4),
+            "05-qa-attempt-1": ("QA", 5),
+            "06-repair-skipped": ("REPAIR", 6),
+            "06-repair-attempt-1": ("REPAIR", 6),
+            "06-consolidation-attempt-1": ("REPAIR", 6),
+            "07-summary": ("REPORT", 7),
+        }
+        for directory, (phase, phase_number) in expected_bindings.items():
+            with self.subTest(directory=directory, field="phase"):
+                self.update_manifest(directory, phase="WRONG")
+                self.assert_error_code("invalid_phase_binding")
+                self.update_manifest(directory, phase=phase)
+            with self.subTest(directory=directory, field="phase_number"):
+                self.update_manifest(directory, phase_number=phase_number + 1)
+                self.assert_error_code("invalid_phase_binding")
+                self.update_manifest(directory, phase_number=phase_number)
 
     def make_exhausted_run(self, complexity: str) -> Path:
         retry_limit = 1 if complexity == "Simple" else 2

@@ -106,6 +106,16 @@ BASE_PHASES = (
     ("04-author", "AUTHOR"),
 )
 SUMMARY_DIRECTORY = "07-summary"
+CANONICAL_PHASE_DIRECTORIES = {
+    "00-load": ("LOAD", 0),
+    "01-plan": ("PLAN", 1),
+    "02-context": ("CONTEXT", 2),
+    "03-figma": ("FIGMA", 3),
+    "04-author": ("AUTHOR", 4),
+    "06-repair-skipped": ("REPAIR", 6),
+    "06-consolidation-attempt-1": ("REPAIR", 6),
+    "07-summary": ("REPORT", 7),
+}
 EARLY_TERMINAL_RULES = {
     "LOAD": ("BLOCKED", {"INPUT_INVALID", "WORKSPACE_NOT_FOUND"}),
     "PLAN": ("BLOCKED", {"PLAN_INCOMPLETE"}),
@@ -339,6 +349,41 @@ def _validate_manifest(
             errors.append(_error(path, "invalid_terminal_failure", "terminal blocked/failed result needs error code and STOP next_agent"))
 
 
+def _canonical_phase_binding(name: str) -> tuple[str, int] | None:
+    if name in CANONICAL_PHASE_DIRECTORIES:
+        return CANONICAL_PHASE_DIRECTORIES[name]
+    if QA_DIRECTORY_PATTERN.fullmatch(name):
+        return ("QA", 5)
+    if REPAIR_DIRECTORY_PATTERN.fullmatch(name):
+        return ("REPAIR", 6)
+    return None
+
+
+def _validate_phase_directories(
+    run_dir: Path,
+    phase_dirs: list[Path],
+    manifests: dict[str, dict[str, Any]],
+    errors: list[ValidationError],
+) -> None:
+    for phase_dir in phase_dirs:
+        expected_binding = _canonical_phase_binding(phase_dir.name)
+        if expected_binding is None:
+            errors.append(_error(phase_dir, "invalid_phase_topology", "phase directory is not canonical"))
+            continue
+        manifest = manifests.get(phase_dir.name)
+        if manifest is None:
+            continue
+        expected_phase, expected_phase_number = expected_binding
+        if manifest.get("phase") != expected_phase or manifest.get("phase_number") != expected_phase_number:
+            errors.append(
+                _error(
+                    phase_dir / "manifest.json",
+                    "invalid_phase_binding",
+                    f"{phase_dir.name} must declare phase {expected_phase} with phase_number {expected_phase_number}",
+                )
+            )
+
+
 def _validate_base_phase_topology(
     run_dir: Path,
     phase_names: set[str],
@@ -483,6 +528,14 @@ def _validate_qa_repair_sequence(
         if qa_manifest.get("retry_count") != expected_retry_count:
             errors.append(_error(run_dir / f"05-qa-attempt-{qa_number}" / "manifest.json", "invalid_retry_count", "QA retry_count must retain consumed repairs"))
     final_qa = manifests[f"05-qa-attempt-{qa_numbers[-1]}"]
+    if summary and summary.get("status") in {"SKIPPED", "SUCCESS_WITH_WARNINGS"}:
+        errors.append(
+            _error(
+                run_dir / "07-summary" / "manifest.json",
+                "invalid_success_terminal_topology",
+                "clean QA topology requires a SUCCESS summary status",
+            )
+        )
     if summary and summary.get("status") == "SUCCESS":
         if not (
             final_qa.get("status") == "SUCCESS"
@@ -581,6 +634,7 @@ def validate_run(run_dir: Path, repository_root: Path | None = None) -> list[Val
             errors.append(_error(content_path, "missing_skipped_figma_reason", "skipped Figma content requires a non-empty reason"))
         if phase_dir.name == "06-repair-skipped" and manifest.get("status") == "SKIPPED" and not body:
             errors.append(_error(content_path, "missing_skipped_repair_reason", "skipped repair content requires a non-empty reason"))
+    _validate_phase_directories(resolved_run_dir, phase_dirs, manifests, errors)
     reaches_qa = _validate_base_phase_topology(resolved_run_dir, phase_names, manifests, errors)
     if reaches_qa:
         _validate_qa_repair_sequence(resolved_run_dir, manifests, errors)

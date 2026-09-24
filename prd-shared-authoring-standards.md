@@ -164,7 +164,7 @@ https://www.figma.com/design/example-link
 
 ## Verification
 
-After writing, signal the orchestrator to invoke `prd-consistency-checker` with the document's absolute path, Document Type, and any Figma URLs used. The task is not complete until the checker has run and all findings are resolved.
+After writing, signal the caller to invoke `prd-consistency-checker` with the document's absolute path, Document Type, and any Figma URLs used. For a full run, `prd-pipeline` invokes `prd-consistency-checker`; standalone authors provide the same handoff to their caller. The task is not complete until the checker has run and all findings are resolved.
 
 ---
 
