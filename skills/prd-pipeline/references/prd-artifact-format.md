@@ -83,7 +83,7 @@ Every manifest includes all keys in this example. `artifact_dir` and non-empty `
 | `next_agent` | Canonical agent name or `STOP` for terminal result. |
 | `error_code` / `error_details` | `NONE` when no error; otherwise normalized code and details. |
 | `retry_count` | Normal correction attempts consumed. |
-| `retry_limit` | `1` for `Simple`, `2` for `Complex`; explicit value remains present for `UNKNOWN`. |
+| `retry_limit` | `1` for `Simple`, `2` for `Complex`, `0` for `UNKNOWN` until planner resolves complexity. |
 | `consolidation_attempts` | Separate cleanup attempts. Maximum `1`. |
 | `qa_verdict` | QA outcome such as `NOT_RUN`, `CHECKLIST_PASSED`, or `CHECKLIST_FAILED`. |
 | `terminal` | `true` only for terminal result, normally `07-summary`. |

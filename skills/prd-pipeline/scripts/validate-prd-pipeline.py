@@ -107,8 +107,8 @@ REQUIRED_PHASE_DIRS = {
     "07-summary",
 }
 
-QA_DIRECTORY_PATTERN = re.compile(r"05-qa-attempt-(\d+)")
-REPAIR_DIRECTORY_PATTERN = re.compile(r"06-repair-attempt-(\d+)")
+QA_DIRECTORY_PATTERN = re.compile(r"05-qa-attempt-([1-9]\d*)")
+REPAIR_DIRECTORY_PATTERN = re.compile(r"06-repair-attempt-([1-9]\d*)")
 CONSOLIDATION_DIRECTORY = "06-consolidation-attempt-1"
 REPAIR_SKIPPED_DIRECTORY = "06-repair-skipped"
 
@@ -364,6 +364,8 @@ def _validate_qa_repair_sequence(
         errors.append(_error(run_dir, "invalid_phase_topology", "repair attempts must be contiguous and start at one"))
     if not qa_numbers:
         return
+    if any(f"05-qa-attempt-{number}" not in manifests for number in qa_numbers):
+        return
     has_skipped = REPAIR_SKIPPED_DIRECTORY in names
     has_consolidation = CONSOLIDATION_DIRECTORY in names
     other_phase6 = [
@@ -382,8 +384,18 @@ def _validate_qa_repair_sequence(
     expected_repairs = len(qa_numbers) - 1 - int(has_consolidation)
     if len(repair_numbers) != expected_repairs:
         errors.append(_error(run_dir, "invalid_phase_topology", "repair count must equal failed QA attempts"))
+    retry_limit = manifests[f"05-qa-attempt-{qa_numbers[-1]}"].get("retry_limit")
+    if _is_nonnegative_int(retry_limit) and repair_numbers and repair_numbers[-1] > retry_limit:
+        errors.append(_error(run_dir, "retry_count_exceeded", "highest repair attempt exceeds retry_limit"))
+    for repair_number in repair_numbers:
+        repair_manifest = manifests.get(f"06-repair-attempt-{repair_number}")
+        if repair_manifest is None:
+            continue
+        if repair_manifest.get("retry_count") != repair_number:
+            errors.append(_error(run_dir / f"06-repair-attempt-{repair_number}" / "manifest.json", "invalid_retry_count", "repair retry_count must equal repair attempt number"))
     if not repair_numbers and expected_repairs == 0 and not has_skipped and not has_consolidation:
         errors.append(_error(run_dir, "invalid_phase_topology", "clean QA requires repair-skipped or consolidation artifact"))
+    summary = manifests.get("07-summary")
     for index, qa_number in enumerate(qa_numbers, start=1):
         qa_manifest = manifests[f"05-qa-attempt-{qa_number}"]
         verdict = qa_manifest.get("qa_verdict")
@@ -392,12 +404,36 @@ def _validate_qa_repair_sequence(
             errors.append(_error(run_dir / f"05-qa-attempt-{qa_number}" / "manifest.json", "invalid_qa_sequence", "QA sequence has invalid verdict"))
         if index < len(qa_numbers) and not is_consolidation_pass and f"06-repair-attempt-{index}" not in names:
             errors.append(_error(run_dir, "invalid_phase_topology", "failed QA requires matching repair attempt"))
+        expected_retry_count = index - 1 if index < len(qa_numbers) and not is_consolidation_pass else len(repair_numbers)
+        if summary and summary.get("error_code") == "QA_RETRY_EXHAUSTED" and index == len(qa_numbers):
+            expected_retry_count = qa_manifest.get("retry_limit")
+        if qa_manifest.get("retry_count") != expected_retry_count:
+            errors.append(_error(run_dir / f"05-qa-attempt-{qa_number}" / "manifest.json", "invalid_retry_count", "QA retry_count must retain consumed repairs"))
     final_qa = manifests[f"05-qa-attempt-{qa_numbers[-1]}"]
-    if final_qa.get("qa_verdict") != "CHECKLIST_PASSED":
-        errors.append(_error(run_dir / f"05-qa-attempt-{qa_numbers[-1]}" / "manifest.json", "final_qa_not_passed", "final QA attempt must be CHECKLIST_PASSED"))
-    summary = manifests.get("07-summary")
-    if summary and summary.get("status") == "SUCCESS" and summary.get("qa_verdict") != "CHECKLIST_PASSED":
-        errors.append(_error(run_dir / "07-summary" / "manifest.json", "terminal_success_without_checklist", "successful summary requires CHECKLIST_PASSED"))
+    if summary and summary.get("status") == "SUCCESS":
+        if not (
+            final_qa.get("status") == "SUCCESS"
+            and final_qa.get("terminal") is False
+            and final_qa.get("qa_verdict") == "CHECKLIST_PASSED"
+            and final_qa.get("error_code") == "NONE"
+            and summary.get("qa_verdict") == "CHECKLIST_PASSED"
+        ):
+            errors.append(_error(run_dir / "07-summary" / "manifest.json", "invalid_success_terminal_topology", "successful summary requires passing non-terminal final QA"))
+    elif summary and summary.get("error_code") == "QA_RETRY_EXHAUSTED":
+        if not (
+            final_qa.get("qa_verdict") == "CHECKLIST_FAILED"
+            and final_qa.get("retry_count") == final_qa.get("retry_limit")
+        ):
+            errors.append(_error(run_dir / "07-summary" / "manifest.json", "invalid_failed_terminal_topology", "retry exhaustion requires failed final QA at retry limit"))
+    elif summary and summary.get("error_code") == "CONSOLIDATION_REGRESSION":
+        penultimate_qa = manifests.get(f"05-qa-attempt-{qa_numbers[-2]}") if len(qa_numbers) > 1 else None
+        if not (
+            has_consolidation
+            and penultimate_qa is not None
+            and penultimate_qa.get("qa_verdict") == "CHECKLIST_PASSED"
+            and final_qa.get("qa_verdict") == "CHECKLIST_FAILED"
+        ):
+            errors.append(_error(run_dir / "07-summary" / "manifest.json", "invalid_failed_terminal_topology", "consolidation regression requires pass, consolidation, then failed QA"))
     if has_consolidation:
         consolidation = manifests[CONSOLIDATION_DIRECTORY]
         if consolidation.get("consolidation_attempts") != 1:

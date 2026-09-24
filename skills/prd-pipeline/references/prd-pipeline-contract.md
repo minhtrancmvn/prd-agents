@@ -63,7 +63,7 @@ ERROR_DETAILS: <details-or-NONE>
 
 - `complexity: Simple` permits `retry_limit: 1` normal QA correction retry.
 - `complexity: Complex` permits `retry_limit: 2` normal QA correction retries.
-- `complexity: UNKNOWN` carries no complexity-derived limit until planner resolves it; manifest still requires explicit `retry_limit`.
+- `complexity: UNKNOWN` requires `retry_limit: 0` until planner resolves it; no correction retry is available.
 - Consolidation cleanup permits `consolidation_attempts: 1` as a separate pass. It does not consume normal QA retry budget.
 - Exceeding normal budget ends run with `QA_RETRY_EXHAUSTED`.
 - A clean initial checklist followed by a regressing consolidation recheck ends run with `CONSOLIDATION_REGRESSION`.

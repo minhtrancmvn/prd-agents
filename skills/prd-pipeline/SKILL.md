@@ -264,7 +264,7 @@ ROLES_FILE_NOT_FOUND
 ```text
 CHECKLIST_PASSED -> QA manifest SUCCESS, qa_verdict CHECKLIST_PASSED, error_code NONE; continue to canonical Phase 6 skipped pair or optional consolidation
 CHECKLIST_FAILED -> QA manifest SUCCESS, qa_verdict CHECKLIST_FAILED, error_code CHECKLIST_FAILED, terminal false, next_agent selected author; repair if retry_count < retry_limit
-ROLES_FILE_NOT_FOUND -> terminal BLOCKED when Task 4 checker interface supports it
+ROLES_FILE_NOT_FOUND -> terminal BLOCKED, error_code ROLES_FILE_NOT_FOUND, next_agent STOP
 INPUT_INVALID -> terminal FAILED when Task 4 checker interface supports it
 DOCUMENT_NOT_FOUND -> terminal FAILED when Task 4 checker interface supports it
 anything else -> terminal VALIDATION_FAILED
