@@ -108,7 +108,7 @@ For update or Figma-backed work, pass target path, relevant source context, and 
 
 Pipeline reports absolute run artifact location in terminal response under `Artifacts:`. Pipeline stores artifacts outside repository source and does not source-control them. Never add generated PRDs, credentials, runtime state, or run artifacts to Git.
 
-Every phase directory has both `manifest.json` and `content.md`, including skipped phases. `manifest.json` stores normalized machine-readable state. `content.md` begins with normalized handoff envelope then preserves worker output or local evidence. Required lifecycle includes `00-load`, `01-plan`, `02-context`, `03-figma`, `04-author`, `05-qa-attempt-N`, required Phase 6 repair or skip artifact, and `07-summary` for every terminal run.
+Every phase directory has both `manifest.json` and `content.md`, including skipped phases. `manifest.json` stores normalized machine-readable state. `content.md` begins with normalized handoff envelope then preserves worker output or local evidence. Every terminal run has `07-summary`. Runs reaching QA include `05-qa-attempt-N`; only a run that reaches the QA path needs Phase 6 repair, consolidation, or repair-skipped artifact. Early terminal runs from LOAD, PLAN, CONTEXT, FIGMA, or AUTHOR stop with `07-summary` and do not create Phase 6 artifact.
 
 Successful terminal response has `PRD_PIPELINE_COMPLETE`, absolute target path, document type, mode, completed stages, `CHECKLIST_PASSED`, retry accounting, artifact directory, and notes. Blocked or failed terminal response has `PRD_PIPELINE_BLOCKED` or `PRD_PIPELINE_FAILED`, phase, error, target, remediation, artifacts, and unresolved items.
 
@@ -118,15 +118,19 @@ Successful terminal response has `PRD_PIPELINE_COMPLETE`, absolute target path, 
 
 | Signal | Meaning | Next action |
 |---|---|---|
+| `INPUT_INVALID` | Required request, workspace, target, or checker input is missing, malformed, or unsafe | Supply valid required input and rerun from a new pipeline invocation |
+| `WORKSPACE_NOT_FOUND` | Supplied workspace root does not exist | Supply existing absolute workspace root and rerun |
 | `ROLES_FILE_NOT_FOUND` | Roles source missing or unreadable | Add or specify readable `roles-permissions.md`, then rerun pipeline |
 | `RISK_ITEMS_FOUND` | Requested roles do not resolve without approval | Correct roles or explicitly approve exact unresolved-role list |
 | `PLAN_INCOMPLETE` | Planner result lacks required fields or safe target resolution | Supply missing scope, roles, documents, target, outline, or complexity facts |
 | `FIGMA_READ_FAILURE` | Required Figma source failed, was inaccessible, or returned malformed or empty result | Verify MCP availability and Figma access, then rerun |
+| `AUTHOR_INPUT_INVALID` | Selected author received invalid type, target, mode, or required handoff input | Correct planned input or target policy and rerun |
 | `AUTHOR_WRITE_FAILURE` | Author did not produce planned exact target | Correct target inputs or workspace write access, then rerun |
+| `DOCUMENT_NOT_FOUND` | Planned target cannot be read before QA or is absent after authoring | Restore or create exact planned target, then rerun |
 | `CHECKLIST_FAILED` | QA found blocking findings with retry budget remaining | Pipeline supplies complete findings to selected author and reruns QA |
 | `QA_RETRY_EXHAUSTED` | Normal correction budget consumed without clean QA | Resolve reported findings, then start new run |
 | `CONSOLIDATION_REGRESSION` | Optional post-pass consolidation caused QA failure | Revert or correct consolidation changes, then start new run |
-| `VALIDATION_FAILED` | Package or run artifact validation failed | Repair reported artifact or contract issue and rerun validation |
+| `VALIDATION_FAILED` | Package or run-artifact validation failed, or worker/checker output was unsupported, mixed, empty, malformed, or an agent error | Repair reported artifact or contract issue; correct worker/checker input or availability; then start a new run or rerun validation as applicable |
 | `CHECKLIST_PASSED` | QA found no blocking checklist issue | Pipeline validates run and reports completion |
 
 `CHECKLIST_PASSED` and `CHECKLIST_FAILED` are mutually exclusive QA outcomes. Pipeline does not claim success until final checker verdict passes and run validator succeeds.

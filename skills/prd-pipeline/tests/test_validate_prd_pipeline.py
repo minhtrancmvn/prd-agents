@@ -81,6 +81,30 @@ README_REQUIRED_TERMS = {
     "validate-prd-pipeline.py package",
     "validate-prd-pipeline.py run",
 }
+README_USER_INSTALL_COMMANDS = (
+    "mkdir -p ~/.claude/agents ~/.claude/skills",
+    "cp agents/prd-*.md ~/.claude/agents/",
+    "cp prd-shared-authoring-standards.md ~/.claude/",
+    "rm -rf ~/.claude/skills/prd-pipeline",
+    "cp -R skills/prd-pipeline ~/.claude/skills/",
+)
+README_PROJECT_INSTALL_COMMANDS = (
+    'mkdir -p "$PROJECT_ROOT/.claude/agents" "$PROJECT_ROOT/.claude/skills"',
+    'cp agents/prd-*.md "$PROJECT_ROOT/.claude/agents/"',
+    'rm -rf "$PROJECT_ROOT/.claude/skills/prd-pipeline"',
+    'cp -R skills/prd-pipeline "$PROJECT_ROOT/.claude/skills/"',
+    "cp prd-shared-authoring-standards.md ~/.claude/",
+)
+README_VALIDATOR_COMMANDS = (
+    "python3 skills/prd-pipeline/scripts/validate-prd-pipeline.py package --skill-root skills/prd-pipeline",
+    "python3 skills/prd-pipeline/scripts/validate-prd-pipeline.py run --run-dir /absolute/path/to/run --repository-root /absolute/path/to/workspace",
+)
+README_REQUIRED_STATUS_SIGNALS = {
+    "INPUT_INVALID",
+    "WORKSPACE_NOT_FOUND",
+    "AUTHOR_INPUT_INVALID",
+    "DOCUMENT_NOT_FOUND",
+}
 ORCHESTRATOR_PATH = REPOSITORY_ROOT / "agents" / "prd-orchestrator.md"
 FIGMA_READER_PATH = REPOSITORY_ROOT / "agents" / "prd-figma-reader.md"
 CHECKER_PATH = REPOSITORY_ROOT / "agents" / "prd-consistency-checker.md"
@@ -108,6 +132,46 @@ class ReadmeContractTests(unittest.TestCase):
             {term for term in README_REQUIRED_TERMS if term not in readme_text},
             set(),
         )
+
+    def test_readme_documents_exact_install_commands_for_both_scopes(self) -> None:
+        readme_text = README_PATH.read_text(encoding="utf-8")
+        for command in (*README_USER_INSTALL_COMMANDS, *README_PROJECT_INSTALL_COMMANDS):
+            with self.subTest(command=command):
+                self.assertIn(command, readme_text)
+
+    def test_readme_documents_exact_validator_commands(self) -> None:
+        readme_text = README_PATH.read_text(encoding="utf-8")
+        for command in README_VALIDATOR_COMMANDS:
+            with self.subTest(command=command):
+                self.assertIn(command, readme_text)
+
+    def test_readme_requires_artifacts_outside_repository(self) -> None:
+        readme_text = README_PATH.read_text(encoding="utf-8")
+        self.assertIn("outside repository source", readme_text)
+        self.assertIn("outside that root", readme_text)
+
+    def test_readme_documents_required_terminal_statuses(self) -> None:
+        readme_text = README_PATH.read_text(encoding="utf-8")
+        self.assertEqual(
+            {signal for signal in README_REQUIRED_STATUS_SIGNALS if signal not in readme_text},
+            set(),
+        )
+
+    def test_readme_limits_phase_six_artifacts_to_qa_runs(self) -> None:
+        readme_text = README_PATH.read_text(encoding="utf-8")
+        self.assertIn("Every terminal run has `07-summary`.", readme_text)
+        self.assertIn("only a run that reaches the QA path needs Phase 6", readme_text)
+        self.assertIn("LOAD, PLAN, CONTEXT, FIGMA, or AUTHOR", readme_text)
+        self.assertIn("do not create Phase 6 artifact", readme_text)
+
+    def test_readme_defines_validation_failed_for_artifacts_and_worker_output(self) -> None:
+        readme_text = README_PATH.read_text(encoding="utf-8")
+        for term in (
+            "Package or run-artifact validation failed",
+            "unsupported, mixed, empty, malformed, or an agent error",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, readme_text)
 
     def test_readme_removes_obsolete_manual_orchestration_guidance(self) -> None:
         readme_text = README_PATH.read_text(encoding="utf-8")
