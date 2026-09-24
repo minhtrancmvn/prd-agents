@@ -34,6 +34,39 @@ ARTIFACT_REQUIRED_TERMS = {
     "07-summary",
 }
 
+SKILL_PATH = Path(__file__).parents[1] / "SKILL.md"
+SKILL_REQUIRED_FRONTMATTER = {
+    "name: prd-pipeline",
+    "version: 1.0.0",
+    "user-invocable: true",
+    "  - Agent",
+    "  - Task",
+}
+SKILL_REQUIRED_PHASES = (
+    "### Phase 0: LOAD",
+    "### Phase 1: PLAN",
+    "### Phase 2: CONTEXT AND ROLES",
+    "### Phase 3: FIGMA",
+    "### Phase 4: AUTHOR",
+    "### Phase 5: QA",
+    "### Phase 6: REPAIR AND RECHECK",
+    "### Phase 7: REPORT",
+)
+SKILL_REQUIRED_AGENTS = {
+    "prd-planner",
+    "prd-context-role-analyzer",
+    "prd-figma-reader",
+    "prd-author",
+    "prd-noti-req-author",
+    "prd-email-req-author",
+    "prd-consistency-checker",
+}
+SKILL_REQUIRED_REFERENCES = {
+    "references/prd-pipeline-contract.md",
+    "references/prd-artifact-format.md",
+    "validate-prd-pipeline.py run --run-dir",
+}
+
 
 spec = importlib.util.spec_from_file_location("validate_prd_pipeline", VALIDATOR_PATH)
 if spec is None or spec.loader is None:
@@ -116,6 +149,26 @@ class PackageValidationTests(unittest.TestCase):
         artifact_format_text = ARTIFACT_FORMAT_PATH.read_text(encoding="utf-8")
         self.assertEqual(
             {term for term in ARTIFACT_REQUIRED_TERMS if term not in artifact_format_text},
+            set(),
+        )
+
+    def test_skill_structure_contains_required_frontmatter_phases_agents_and_references(self) -> None:
+        self.assertTrue(SKILL_PATH.is_file(), "missing_skill")
+        skill_text = SKILL_PATH.read_text(encoding="utf-8")
+        self.assertEqual(
+            {term for term in SKILL_REQUIRED_FRONTMATTER if term not in skill_text},
+            set(),
+        )
+        self.assertEqual(
+            [phase for phase in SKILL_REQUIRED_PHASES if phase not in skill_text],
+            [],
+        )
+        self.assertEqual(
+            {agent for agent in SKILL_REQUIRED_AGENTS if agent not in skill_text},
+            set(),
+        )
+        self.assertEqual(
+            {term for term in SKILL_REQUIRED_REFERENCES if term not in skill_text},
             set(),
         )
 
