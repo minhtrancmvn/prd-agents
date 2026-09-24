@@ -537,7 +537,7 @@ class RunValidationTests(unittest.TestCase):
 
     def test_early_terminal_failures_accept_contiguous_prefix_and_summary(self) -> None:
         cases = (
-            ("00-load", "LOAD", "INPUT_INVALID", "FAILED"),
+            ("00-load", "LOAD", "INPUT_INVALID", "BLOCKED"),
             ("01-plan", "PLAN", "PLAN_INCOMPLETE", "BLOCKED"),
             ("02-context", "CONTEXT", "ROLES_FILE_NOT_FOUND", "BLOCKED"),
             ("03-figma", "FIGMA", "FIGMA_READ_FAILURE", "FAILED"),
@@ -623,6 +623,35 @@ class RunValidationTests(unittest.TestCase):
                 self.make_early_terminal_run(directory, phase=phase, error_code=error_code, status=status)
                 self.assert_error_code("invalid_terminal_topology")
                 self.run_dir = Path(self.temp_dir.name) / f"run-{directory}"
+
+    def test_early_terminal_failure_rejects_valid_error_with_wrong_phase_status(self) -> None:
+        cases = (
+            ("00-load", "LOAD", "INPUT_INVALID", "FAILED"),
+            ("01-plan", "PLAN", "PLAN_INCOMPLETE", "FAILED"),
+            ("02-context", "CONTEXT", "RISK_ITEMS_FOUND", "FAILED"),
+            ("03-figma", "FIGMA", "FIGMA_READ_FAILURE", "BLOCKED"),
+            ("04-author", "AUTHOR", "AUTHOR_INPUT_INVALID", "BLOCKED"),
+        )
+        for directory, phase, error_code, status in cases:
+            with self.subTest(phase=phase):
+                self.make_early_terminal_run(directory, phase=phase, error_code=error_code, status=status)
+                self.assert_error_code("invalid_terminal_topology")
+                self.run_dir = Path(self.temp_dir.name) / f"run-{directory}"
+
+    def test_early_terminal_failure_rejects_nonterminal_summary_statuses(self) -> None:
+        for status in ("SKIPPED", "SUCCESS_WITH_WARNINGS", "UNKNOWN"):
+            with self.subTest(status=status):
+                self.make_early_terminal_run("01-plan", phase="PLAN", error_code="PLAN_INCOMPLETE", status="BLOCKED")
+                self.update_manifest("07-summary", status=status)
+                self.assert_error_code("invalid_terminal_topology")
+                self.run_dir = Path(self.temp_dir.name) / f"run-{status}"
+
+    def test_early_terminal_failure_rejects_nonterminal_summary_status_with_extra_directory(self) -> None:
+        self.make_early_terminal_run("01-plan", phase="PLAN", error_code="PLAN_INCOMPLETE", status="BLOCKED")
+        self.update_manifest("07-summary", status="SKIPPED")
+        self.write_phase(self.run_dir, "08-unapproved", phase="REPORT", status="SUCCESS", complexity="Simple")
+        self.assert_error_code("invalid_terminal_topology")
+        self.assert_error_code("invalid_phase_topology")
 
     def test_successful_use_case_create_passes(self) -> None:
         self.make_successful_run()

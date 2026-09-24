@@ -106,12 +106,12 @@ BASE_PHASES = (
     ("04-author", "AUTHOR"),
 )
 SUMMARY_DIRECTORY = "07-summary"
-EARLY_TERMINAL_ERRORS = {
-    "LOAD": {"INPUT_INVALID", "WORKSPACE_NOT_FOUND"},
-    "PLAN": {"PLAN_INCOMPLETE"},
-    "CONTEXT": {"ROLES_FILE_NOT_FOUND", "RISK_ITEMS_FOUND"},
-    "FIGMA": {"FIGMA_READ_FAILURE"},
-    "AUTHOR": {"AUTHOR_INPUT_INVALID", "AUTHOR_WRITE_FAILURE"},
+EARLY_TERMINAL_RULES = {
+    "LOAD": ("BLOCKED", {"INPUT_INVALID", "WORKSPACE_NOT_FOUND"}),
+    "PLAN": ("BLOCKED", {"PLAN_INCOMPLETE"}),
+    "CONTEXT": ("BLOCKED", {"ROLES_FILE_NOT_FOUND", "RISK_ITEMS_FOUND"}),
+    "FIGMA": ("FAILED", {"FIGMA_READ_FAILURE"}),
+    "AUTHOR": ("FAILED", {"AUTHOR_INPUT_INVALID", "AUTHOR_WRITE_FAILURE"}),
 }
 
 QA_DIRECTORY_PATTERN = re.compile(r"05-qa-attempt-([1-9]\d*)")
@@ -366,15 +366,13 @@ def _validate_base_phase_topology(
             errors.append(_error(run_dir / directory / "manifest.json", "invalid_phase_topology", f"{directory} must declare phase {phase}"))
 
     reached_qa = any(name.startswith("05-qa-attempt-") for name in names)
-    if summary.get("status") == "SUCCESS":
-        if len(present_indices) != len(BASE_PHASES) or not reached_qa:
-            errors.append(_error(run_dir / SUMMARY_DIRECTORY / "manifest.json", "invalid_success_terminal_topology", "successful summary requires all base phases and QA"))
-        return reached_qa
-
-    if summary.get("status") not in {"BLOCKED", "FAILED"}:
-        return reached_qa
-
     if reached_qa:
+        if summary.get("status") == "SUCCESS":
+            if len(present_indices) != len(BASE_PHASES):
+                errors.append(_error(run_dir / SUMMARY_DIRECTORY / "manifest.json", "invalid_success_terminal_topology", "successful summary requires all base phases and QA"))
+            return True
+        if summary.get("status") not in {"BLOCKED", "FAILED"}:
+            return True
         if len(present_indices) != len(BASE_PHASES):
             errors.append(_error(run_dir, "invalid_phase_topology", "QA requires all base phases"))
         return True
@@ -396,13 +394,13 @@ def _validate_base_phase_topology(
     ):
         errors.append(_error(run_dir, "invalid_terminal_topology", "early terminal preceding base phases must be successful non-terminal results"))
 
-    allowed_errors = EARLY_TERMINAL_ERRORS[terminal_phase]
+    expected_status, allowed_errors = EARLY_TERMINAL_RULES[terminal_phase]
     if not (
-        terminal_manifest.get("status") in {"BLOCKED", "FAILED"}
+        terminal_manifest.get("status") == expected_status
         and terminal_manifest.get("terminal") is False
         and terminal_manifest.get("error_code") in allowed_errors
         and summary.get("terminal") is True
-        and summary.get("status") == terminal_manifest.get("status")
+        and summary.get("status") == expected_status
         and summary.get("error_code") == terminal_manifest.get("error_code")
     ):
         errors.append(_error(run_dir / SUMMARY_DIRECTORY / "manifest.json", "invalid_terminal_topology", "early terminal summary must match valid failed or blocked final phase"))
