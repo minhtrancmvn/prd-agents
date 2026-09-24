@@ -99,11 +99,13 @@ Use phase directories:
 03-figma
 04-author
 05-qa-attempt-N
+06-repair-skipped
 06-repair-attempt-N
+06-consolidation-attempt-1
 07-summary
 ```
 
-Set one stable `run_id`, absolute `artifact_dir`, explicit `retry_limit`, and current retry/consolidation values on every manifest. Planner complexity determines normal retry limit: `Simple` is `1`; `Complex` is `2`. Do not derive a limit before planner resolves complexity. Preserve `UNKNOWN` only while unresolved with an explicit limit and do not enter repair until resolved safely.
+Set one stable `run_id`, absolute `artifact_dir`, explicit `retry_limit`, and current retry/consolidation values on every manifest. Before PLAN resolves complexity, set `retry_limit: 0`; LOAD and pre-plan manifests must not claim repair budget. Planner complexity then determines normal retry limit: `Simple` is `1`; `Complex` is `2`. Preserve `UNKNOWN` only while unresolved with `retry_limit: 0` and do not enter repair until resolved safely.
 
 On every terminal failure, create `07-summary/manifest.json` and `07-summary/content.md`, then report:
 
@@ -155,8 +157,9 @@ fields and include Figma Links to Analyse only when the request contains links.
 ```
 
 3. Require non-empty worker output and all seven mandatory Plan Document fields: Document Type, Scope Summary, User Roles Involved, Files & Documents to Read, Target File Path, Document Section Outline, Complexity Assessment.
-4. Normalize planner `New` mode to contract `CREATE`; normalize `Update` to `UPDATE`. Require document type exactly `Use Case`, `Notification`, or `Email Template`; require absolute target path; require complexity `Simple` or `Complex`.
-5. Set retry limit to `1` for Simple or `2` for Complex. Capture Figma links only from explicit request/plan links; do not invent links.
+4. Normalize planner `New` mode to contract `CREATE`; normalize `Update` to `UPDATE`. Require document type exactly `Use Case`, `Notification`, or `Email Template`.
+5. Resolve planner target path deterministically: for a relative target, first resolve against explicit PRD root; otherwise resolve against `<workspace_root>/prd`; normalize with path resolution, then require resulting path absolute and policy-compliant. For UPDATE, retain supplied existing path after normalization; never substitute a new path later.
+6. Set retry limit to `1` for Simple or `2` for Complex. Capture Figma links only from explicit request/plan links; do not invent links.
 
 **Artifact:** `01-plan/manifest.json` and `01-plan/content.md` containing full raw Plan Document after normalized `PLAN` envelope.
 
@@ -240,35 +243,33 @@ Email Template -> prd-email-req-author
 
 **Actions:**
 
-1. Create `05-qa-attempt-N` artifacts before dispatch. Persist target path, document type, absolute workspace root, Figma analysis or skip, Context Report role evidence, external ClickUp verification evidence, retry state, and author artifact path.
-2. Dispatch `prd-consistency-checker` read-only. Require checker first line to be exactly one primary token and full non-empty body:
+1. Preflight checker inputs before dispatch: target path must be absolute and readable with `Read`; document type must be exact; workspace root must exist; Context Report role source state must be available. Preflight failure is terminal `INPUT_INVALID` or `DOCUMENT_NOT_FOUND`; do not call checker.
+2. Create `05-qa-attempt-N` artifacts before dispatch. Persist target path, document type, absolute workspace root, Figma analysis or skip, Context Report role evidence, `clickup_verification_status: NOT_CHECKED|VERIFIED`, exact external ClickUp verification evidence or `NONE`, retry state, and author artifact path. Without authorized evidence, require checker to perform URL syntax-only checks and report live ClickUp validity as `NOT_CHECKED`; never infer it.
+3. Dispatch `prd-consistency-checker` read-only. Current checker interface is preflighted because Task 4 will align its statuses. Require trimmed first line to equal exactly one documented current status and full non-empty body:
 
 ```text
 CHECKLIST_PASSED
 CHECKLIST_FAILED
-ROLES_FILE_NOT_FOUND
-INPUT_INVALID
-DOCUMENT_NOT_FOUND
 ```
 
-3. Parse only first output token for state transition. Preserve full checker body in content artifact and normalize findings.
+4. Parse whole trimmed first line, not first token. Reject every unsupported/mixed/future status as `VALIDATION_FAILED` until Task 4 changes checker contract. Preserve full checker body in content artifact and normalize findings.
 
-**Artifact:** `05-qa-attempt-N/manifest.json` and `05-qa-attempt-N/content.md` with `qa_verdict`, all checker findings, current retry count/limit, and consolidation count.
+**Artifact:** `05-qa-attempt-N/manifest.json` and `05-qa-attempt-N/content.md` with `qa_verdict`, all checker findings, current retry count/limit, consolidation count, and explicit ClickUp verification status/evidence.
 
-**Gate:** Non-empty checker result, one recognized first token, complete artifact pair, and target/document facts match author result.
+**Gate:** Preflight passes, non-empty checker result has exactly one supported whole first line, complete artifact pair, and target/document facts match author result.
 
 **Failure and exclusive state machine:**
 
 ```text
-CHECKLIST_PASSED -> success or optional one-pass consolidation
-CHECKLIST_FAILED -> repair if retry_count < retry_limit
-ROLES_FILE_NOT_FOUND -> terminal BLOCKED
-INPUT_INVALID -> terminal FAILED
-DOCUMENT_NOT_FOUND -> terminal FAILED
+CHECKLIST_PASSED -> QA manifest SUCCESS, qa_verdict CHECKLIST_PASSED, error_code NONE; continue to canonical Phase 6 skipped pair or optional consolidation
+CHECKLIST_FAILED -> QA manifest SUCCESS, qa_verdict CHECKLIST_FAILED, error_code CHECKLIST_FAILED, terminal false, next_agent selected author; repair if retry_count < retry_limit
+ROLES_FILE_NOT_FOUND -> terminal BLOCKED when Task 4 checker interface supports it
+INPUT_INVALID -> terminal FAILED when Task 4 checker interface supports it
+DOCUMENT_NOT_FOUND -> terminal FAILED when Task 4 checker interface supports it
 anything else -> terminal VALIDATION_FAILED
 ```
 
-For `ROLES_FILE_NOT_FOUND`, terminal `BLOCKED` with same error. For `INPUT_INVALID` or `DOCUMENT_NOT_FOUND`, terminal `FAILED` with same error. Unrecognized token, checker error, empty output, or malformed result is terminal `FAILED` with `VALIDATION_FAILED`. Never combine a checklist verdict with blocking error.
+Current Task 3 checker dispatch accepts only the two documented current `CHECKLIST_*` statuses after preflight. `ROLES_FILE_NOT_FOUND`, `INPUT_INVALID`, and `DOCUMENT_NOT_FOUND` remain future five-status contract branches for Task 4. If `CHECKLIST_FAILED` has exhausted normal budget, terminal `FAILED` with `QA_RETRY_EXHAUSTED`; otherwise create repair artifact. Unsupported, mixed, agent-error, empty, or malformed output is terminal `FAILED` with `VALIDATION_FAILED`. Never combine a checklist verdict with blocking error.
 
 ### Phase 6: REPAIR AND RECHECK
 
@@ -276,16 +277,17 @@ For `ROLES_FILE_NOT_FOUND`, terminal `BLOCKED` with same error. For `INPUT_INVAL
 
 **Actions:**
 
-1. Enter only after `CHECKLIST_FAILED` and only when `retry_count < retry_limit`.
-2. Create `06-repair-attempt-N` artifacts before dispatch. Give same selected author complete original author inputs plus full checker body, exact target path, current document content, and a correction-only instruction. Do not truncate or summarize checker findings.
-3. Require non-empty correction output. Verify exact target exists with `Read`. Record corrected self-check claims and full raw response.
-4. Increment `retry_count` only after author correction has returned and exact target verification succeeds. Never increment for a failed dispatch, a checker failure, or planned repair.
-5. Rerun Phase 5 with next QA attempt. If normal budget is exhausted after a failed checklist result, terminal `FAILED` with `QA_RETRY_EXHAUSTED`.
-6. Optional consolidation occurs only once after clean `CHECKLIST_PASSED`, uses same author with consolidation recommendations, records `consolidation_attempts: 1`, then reruns QA. Keep consolidation count separate from normal retry count. If recheck regresses, terminal `FAILED` with `CONSOLIDATION_REGRESSION`. If it passes, record `consolidation=passed`.
+1. If QA is `CHECKLIST_PASSED` and no consolidation is requested, create canonical `06-repair-skipped/manifest.json` and `06-repair-skipped/content.md` with `STATUS: SKIPPED`, `phase: REPAIR`, `next_agent: prd-pipeline`, `retry_count` unchanged, and explicit reason. This pair is required before REPORT.
+2. Enter repair only after a QA result mapped exactly to `status: SUCCESS`, `qa_verdict: CHECKLIST_FAILED`, `error_code: CHECKLIST_FAILED`, `terminal: false`, and selected author `next_agent`, and only when `retry_count < retry_limit`.
+3. Create `06-repair-attempt-N` artifacts before dispatch. Give same selected author complete original author inputs plus full checker body, exact target path, current document content, and a correction-only instruction. Do not truncate or summarize checker findings.
+4. Require non-empty correction output. Verify exact target exists with `Read`. Record corrected self-check claims and full raw response.
+5. Increment `retry_count` only after author correction has returned and exact target verification succeeds. Never increment for a failed dispatch, a checker failure, or planned repair.
+6. Rerun Phase 5 with next QA attempt. If normal budget is exhausted after a failed checklist result, terminal `FAILED` with `QA_RETRY_EXHAUSTED`.
+7. Optional consolidation occurs only once after clean `CHECKLIST_PASSED`: create `06-consolidation-attempt-1`, set `consolidation_attempts: 1` without changing normal `retry_count`, run same author using consolidation recommendations, then rerun QA. If recheck regresses, terminal `FAILED` with `CONSOLIDATION_REGRESSION`; if it passes, record `consolidation=passed`. Do not create both skipped and consolidation artifacts for same path.
 
-**Artifact:** `06-repair-attempt-N/manifest.json` and `06-repair-attempt-N/content.md` with original author inputs, complete checker body, corrected output, Read verification, and post-correction retry count. Optional consolidation uses an equivalent persisted correction artifact with distinct consolidation count.
+**Artifact:** `06-repair-skipped/manifest.json` and `06-repair-skipped/content.md` for no repair; `06-repair-attempt-N/manifest.json` and `06-repair-attempt-N/content.md` for correction; `06-consolidation-attempt-1/manifest.json` and `06-consolidation-attempt-1/content.md` for consolidation. Every pair records complete inputs/output, Read verification, and separate retry/consolidation counts.
 
-**Gate:** Correction succeeds at exact target, retry increment occurs only after correction, recheck reaches `CHECKLIST_PASSED`, normal retries remain within limit, and consolidation attempts are at most one.
+**Gate:** Required Phase 6 pair exists, correction succeeds at exact target, retry increment occurs only after correction, recheck reaches `CHECKLIST_PASSED`, normal retries remain within limit, and consolidation attempts are at most one.
 
 **Failure:** Author error, empty correction, or missing target is terminal typed author failure. Exhausted normal budget is `QA_RETRY_EXHAUSTED`. Consolidation regression is `CONSOLIDATION_REGRESSION`. Do not return to author outside this state machine.
 
@@ -295,17 +297,17 @@ For `ROLES_FILE_NOT_FOUND`, terminal `BLOCKED` with same error. For `INPUT_INVAL
 
 **Actions:**
 
-1. Write `07-summary` artifact pair with terminal status, target, type, mode, full stage list, QA verdict, retry/consolidation counts, notes, and all prior artifact locations.
+1. Finalize `07-summary` artifact pair before validation with terminal status, target, type, mode, full stage list, QA verdict, retry/consolidation counts, notes, and all prior artifact locations. Do not mutate summary manifest or content after a successful validation pass.
 2. Resolve validator. If source-local project installation is active, use validator relative to loaded skill first. Otherwise use user-level fallback:
 
 ```bash
-python3 <absolute-loaded-skill-root>/scripts/validate-prd-pipeline.py run --run-dir <absolute-run-dir>
+python3 <absolute-loaded-skill-root>/scripts/validate-prd-pipeline.py run --run-dir <absolute-run-dir> --repository-root <absolute-workspace-root>
 # Fallback when loaded skill has no source-local script:
-python3 ~/.claude/skills/prd-pipeline/scripts/validate-prd-pipeline.py run --run-dir <absolute-run-dir>
+python3 ~/.claude/skills/prd-pipeline/scripts/validate-prd-pipeline.py run --run-dir <absolute-run-dir> --repository-root <absolute-workspace-root>
 ```
 
-3. Run validator against absolute run directory. Persist command, stdout, stderr, and exit code in summary content.
-4. Validator pass plus `CHECKLIST_PASSED` is required for successful final response. Validator failure changes summary to terminal `FAILED` with `VALIDATION_FAILED`; report remediation and artifacts.
+3. Run validator against final absolute run directory. Persist command, stdout, stderr, and exit code before validator execution or in an external execution record already listed in summary; never edit final summary after PASS.
+4. Validator pass plus `CHECKLIST_PASSED` is required for successful final response. Validator failure produces final terminal `FAILED` with `VALIDATION_FAILED`, then revalidates replacement summary before reporting remediation and artifacts.
 
 **Artifact:** `07-summary/manifest.json` and `07-summary/content.md`, always. Successful terminal manifest has `STATUS: SUCCESS`, `qa_verdict: CHECKLIST_PASSED`, `terminal: true`, `next_agent: STOP`, and `error_code: NONE`.
 

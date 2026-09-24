@@ -103,8 +103,15 @@ REQUIRED_PHASE_DIRS = {
     "02-context",
     "03-figma",
     "04-author",
+    "05-qa-attempt-1",
     "07-summary",
 }
+
+REQUIRED_PHASE6_PREFIXES = (
+    "06-repair-skipped",
+    "06-repair-attempt-",
+    "06-consolidation-attempt-",
+)
 
 HANDOFF_FIELDS = (
     ("STATUS", "status"),
@@ -304,6 +311,14 @@ def _validate_manifest(
     if _is_nonnegative_int(retry_count) and _is_nonnegative_int(retry_limit) and retry_count > retry_limit:
         errors.append(_error(path, "retry_count_exceeded", "retry_count must not exceed retry_limit"))
 
+    if manifest.get("phase") == "QA" and manifest.get("qa_verdict") == "CHECKLIST_FAILED":
+        if not (
+            status == "SUCCESS"
+            and manifest.get("error_code") == "CHECKLIST_FAILED"
+            and manifest.get("terminal") is False
+            and manifest.get("next_agent") in {"prd-author", "prd-noti-req-author", "prd-email-req-author"}
+        ):
+            errors.append(_error(path, "invalid_qa_repair_mapping", "CHECKLIST_FAILED QA must be non-terminal SUCCESS with CHECKLIST_FAILED and author next_agent"))
     if manifest.get("terminal") is True:
         if status == "SUCCESS" and manifest.get("qa_verdict") != "CHECKLIST_PASSED":
             errors.append(_error(path, "terminal_success_without_checklist", "terminal success requires CHECKLIST_PASSED"))
@@ -336,6 +351,8 @@ def validate_run(run_dir: Path, repository_root: Path | None = None) -> list[Val
     for required_phase in sorted(REQUIRED_PHASE_DIRS - phase_names):
         code = "missing_summary" if required_phase == "07-summary" else "missing_phase"
         errors.append(_error(resolved_run_dir / required_phase, code, "required phase directory is missing"))
+    if not any(name.startswith(REQUIRED_PHASE6_PREFIXES) for name in phase_names):
+        errors.append(_error(resolved_run_dir / "06-repair-skipped", "missing_phase", "required Phase 6 artifact directory is missing"))
 
     for phase_dir in phase_dirs:
         manifest_path = phase_dir / "manifest.json"
@@ -364,6 +381,8 @@ def validate_run(run_dir: Path, repository_root: Path | None = None) -> list[Val
         body = _validate_handoff(content_path, manifest, errors)
         if phase_dir.name == "03-figma" and manifest.get("status") == "SKIPPED" and not body:
             errors.append(_error(content_path, "missing_skipped_figma_reason", "skipped Figma content requires a non-empty reason"))
+        if phase_dir.name == "06-repair-skipped" and manifest.get("status") == "SKIPPED" and not body:
+            errors.append(_error(content_path, "missing_skipped_repair_reason", "skipped repair content requires a non-empty reason"))
     return _sorted(errors)
 
 

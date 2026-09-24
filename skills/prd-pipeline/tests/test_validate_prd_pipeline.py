@@ -241,7 +241,13 @@ class RunValidationTests(unittest.TestCase):
                 f"ERROR_DETAILS: {'NONE' if error_code == 'NONE' else 'fixture failure'}",
             )
         )
-        body = "No Figma links supplied." if directory == "03-figma" and status == "SKIPPED" else "Worker output."
+        body = (
+            "No Figma links supplied."
+            if directory == "03-figma" and status == "SKIPPED"
+            else "No repair required after QA pass."
+            if directory == "06-repair-skipped" and status == "SKIPPED"
+            else "Worker output."
+        )
         (phase_dir / "content.md").write_text(f"{handoff}\n\n{body}\n", encoding="utf-8")
 
     def make_successful_run(
@@ -267,6 +273,16 @@ class RunValidationTests(unittest.TestCase):
                 qa_verdict="CHECKLIST_PASSED",
                 complexity=complexity,
             )
+        self.write_phase(
+            self.run_dir,
+            "06-repair-skipped",
+            phase="REPAIR",
+            status="SKIPPED",
+            document_type=document_type,
+            mode=mode,
+            qa_verdict="CHECKLIST_PASSED",
+            complexity=complexity,
+        )
         self.write_phase(
             self.run_dir,
             "07-summary",
@@ -336,9 +352,49 @@ class RunValidationTests(unittest.TestCase):
 
     def test_qa_failure_then_successful_repair_passes(self) -> None:
         self.make_successful_run(qa_attempts=2)
-        self.update_manifest("05-qa-attempt-1", status="FAILED", error_code="CHECKLIST_FAILED", qa_verdict="CHECKLIST_FAILED")
+        self.update_manifest(
+            "05-qa-attempt-1",
+            status="SUCCESS",
+            error_code="CHECKLIST_FAILED",
+            qa_verdict="CHECKLIST_FAILED",
+            next_agent="prd-author",
+        )
+        for path in (self.run_dir / "06-repair-skipped").iterdir():
+            path.unlink()
+        (self.run_dir / "06-repair-skipped").rmdir()
         self.write_phase(self.run_dir, "06-repair-attempt-1", phase="REPAIR", retry_count=1)
         self.assertEqual(validator.validate_run(self.run_dir), [])
+
+    def test_repair_skipped_phase_is_required(self) -> None:
+        self.make_successful_run()
+        for path in (self.run_dir / "06-repair-skipped").iterdir():
+            path.unlink()
+        (self.run_dir / "06-repair-skipped").rmdir()
+        self.assert_error_code("missing_phase")
+
+    def test_consolidation_attempt_has_separate_phase_path_and_count(self) -> None:
+        self.make_successful_run(qa_attempts=2)
+        self.update_manifest("06-repair-skipped", status="SUCCESS_WITH_WARNINGS", consolidation_attempts=1)
+        self.write_phase(
+            self.run_dir,
+            "06-consolidation-attempt-1",
+            phase="REPAIR",
+            status="SUCCESS",
+            consolidation_attempts=1,
+            qa_verdict="CHECKLIST_PASSED",
+        )
+        self.assertEqual(validator.validate_run(self.run_dir), [])
+
+    def test_checklist_failure_requires_repair_mapping(self) -> None:
+        self.make_successful_run(qa_attempts=2)
+        self.update_manifest(
+            "05-qa-attempt-1",
+            status="SUCCESS",
+            error_code="CHECKLIST_FAILED",
+            qa_verdict="CHECKLIST_FAILED",
+            next_agent="prd-next-agent",
+        )
+        self.assert_error_code("invalid_qa_repair_mapping")
 
     def test_relative_target_path_is_rejected(self) -> None:
         self.make_successful_run()
