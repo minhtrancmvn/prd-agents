@@ -639,19 +639,22 @@ class RunValidationTests(unittest.TestCase):
                 self.run_dir = Path(self.temp_dir.name) / f"run-{directory}"
 
     def test_early_terminal_failure_rejects_nonterminal_summary_statuses(self) -> None:
-        for status in ("SKIPPED", "SUCCESS_WITH_WARNINGS", "UNKNOWN"):
+        for status in ("SUCCESS", "SKIPPED", "SUCCESS_WITH_WARNINGS", "UNKNOWN"):
             with self.subTest(status=status):
                 self.make_early_terminal_run("01-plan", phase="PLAN", error_code="PLAN_INCOMPLETE", status="BLOCKED")
                 self.update_manifest("07-summary", status=status)
                 self.assert_error_code("invalid_terminal_topology")
                 self.run_dir = Path(self.temp_dir.name) / f"run-{status}"
 
-    def test_early_terminal_failure_rejects_nonterminal_summary_status_with_extra_directory(self) -> None:
-        self.make_early_terminal_run("01-plan", phase="PLAN", error_code="PLAN_INCOMPLETE", status="BLOCKED")
-        self.update_manifest("07-summary", status="SKIPPED")
-        self.write_phase(self.run_dir, "08-unapproved", phase="REPORT", status="SUCCESS", complexity="Simple")
-        self.assert_error_code("invalid_terminal_topology")
-        self.assert_error_code("invalid_phase_topology")
+    def test_early_terminal_failure_rejects_invalid_summary_status_with_extra_directory(self) -> None:
+        for status in ("SUCCESS", "SKIPPED", "SUCCESS_WITH_WARNINGS", "UNKNOWN"):
+            with self.subTest(status=status):
+                self.make_early_terminal_run("01-plan", phase="PLAN", error_code="PLAN_INCOMPLETE", status="BLOCKED")
+                self.update_manifest("07-summary", status=status)
+                self.write_phase(self.run_dir, "08-unapproved", phase="REPORT", status="SUCCESS", complexity="Simple")
+                self.assert_error_code("invalid_terminal_topology")
+                self.assert_error_code("invalid_phase_topology")
+                self.run_dir = Path(self.temp_dir.name) / f"run-extra-{status}"
 
     def test_successful_use_case_create_passes(self) -> None:
         self.make_successful_run()
