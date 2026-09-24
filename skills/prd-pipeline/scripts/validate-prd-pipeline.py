@@ -34,6 +34,20 @@ ALLOWED_DOCUMENT_TYPES = {
 ALLOWED_MODES = {"CREATE", "UPDATE", "UNKNOWN"}
 ALLOWED_COMPLEXITIES = {"Simple", "Complex", "UNKNOWN"}
 
+SCHEMA_VERSION = "1.0"
+CANONICAL_AGENTS = {
+    "prd-pipeline",
+    "prd-planner",
+    "prd-context-role-analyzer",
+    "prd-figma-reader",
+    "prd-author",
+    "prd-noti-req-author",
+    "prd-email-req-author",
+    "prd-consistency-checker",
+}
+CANONICAL_NEXT_AGENTS = CANONICAL_AGENTS | {"STOP"}
+TERMINAL_SUMMARY_STATUSES = {"SUCCESS", "BLOCKED", "FAILED"}
+
 ALLOWED_ERROR_CODES = {
     "NONE",
     "INPUT_INVALID",
@@ -337,6 +351,16 @@ def _validate_manifest(
     status = manifest.get("status")
     if status not in ALLOWED_PHASE_STATUSES:
         errors.append(_error(path, "unknown_status", f"status must be one of {sorted(ALLOWED_PHASE_STATUSES)}"))
+    if manifest.get("schema_version") != SCHEMA_VERSION:
+        errors.append(_error(path, "invalid_schema_version", f"schema_version must be {SCHEMA_VERSION}"))
+    if manifest.get("agent") not in CANONICAL_AGENTS:
+        errors.append(_error(path, "unknown_agent", "agent must be a canonical PRD agent name"))
+    if manifest.get("next_agent") not in CANONICAL_NEXT_AGENTS:
+        errors.append(_error(path, "unknown_next_agent", "next_agent must be a canonical PRD agent name or STOP"))
+    if manifest.get("terminal") is True and status not in TERMINAL_SUMMARY_STATUSES:
+        errors.append(
+            _error(path, "invalid_terminal_summary_status", "terminal summary status must be SUCCESS, BLOCKED, or FAILED")
+        )
     if manifest.get("document_type") not in ALLOWED_DOCUMENT_TYPES:
         errors.append(_error(path, "unknown_document_type", "document_type is not allowed"))
     if manifest.get("mode") not in ALLOWED_MODES:
@@ -377,6 +401,11 @@ def _validate_manifest(
         expected_limit = 1 if complexity == "Simple" else 2 if complexity == "Complex" else 0
         if retry_limit != expected_limit:
             errors.append(_error(path, "invalid_retry_limit", f"retry_limit must be {expected_limit} for {complexity}"))
+    if phase_dir.name == "00-load":
+        if complexity != "UNKNOWN":
+            errors.append(_error(path, "invalid_load_complexity", "LOAD must record complexity UNKNOWN before planning"))
+        if retry_limit != 0:
+            errors.append(_error(path, "invalid_retry_limit", "LOAD must record retry_limit 0 before planning"))
     if _is_nonnegative_int(retry_count) and _is_nonnegative_int(retry_limit) and retry_count > retry_limit:
         errors.append(_error(path, "retry_count_exceeded", "retry_count must not exceed retry_limit"))
 
@@ -483,11 +512,13 @@ def _validate_base_phase_topology(
     manifests: dict[str, dict[str, Any]],
     errors: list[ValidationError],
 ) -> bool:
-    """Validate contiguous pre-QA phases and allow an early terminal summary."""
+    """Validate contiguous pre-QA phases and allow an early terminal summary.
+
+    A missing ``07-summary`` is recorded by the caller; this routine still emits the
+    base-phase and QA topology findings so the absent summary does not mask them.
+    """
     names = set(phase_names)
     summary = manifests.get(SUMMARY_DIRECTORY)
-    if summary is None:
-        return False
 
     present_indices = [index for index, (directory, _) in enumerate(BASE_PHASES) if directory in names]
     expected_indices = list(range(len(present_indices)))
@@ -506,7 +537,7 @@ def _validate_base_phase_topology(
     reached_qa = any(name.startswith("05-qa-attempt-") for name in names)
     if reached_qa:
         if len(present_indices) != len(BASE_PHASES):
-            if summary.get("status") == "SUCCESS":
+            if summary is not None and summary.get("status") == "SUCCESS":
                 errors.append(_error(run_dir / SUMMARY_DIRECTORY / "manifest.json", "invalid_success_terminal_topology", "successful summary requires all base phases and QA"))
             else:
                 errors.append(_error(run_dir, "invalid_phase_topology", "QA requires all base phases"))
@@ -526,6 +557,9 @@ def _validate_base_phase_topology(
 
     if not all(_base_phase_is_ready(directory, manifests.get(directory)) for directory, _ in BASE_PHASES[:terminal_index]):
         errors.append(_error(run_dir, "invalid_terminal_topology", "early terminal preceding base phases must be successful non-terminal results"))
+
+    if summary is None:
+        return False
 
     expected_status, allowed_errors = EARLY_TERMINAL_RULES[terminal_phase]
     if not (
@@ -609,6 +643,14 @@ def _validate_qa_repair_sequence(
         and final_qa.get("qa_verdict") == "CHECKLIST_PASSED"
         and final_qa.get("error_code") == "NONE"
     )
+    if summary is not None and summary.get("qa_verdict") != final_qa.get("qa_verdict"):
+        errors.append(
+            _error(
+                run_dir / "07-summary" / "manifest.json",
+                "invalid_summary_qa_verdict",
+                "summary qa_verdict must equal the final QA attempt verdict",
+            )
+        )
     if clean_final_qa and not repair_numbers and not has_skipped and not has_consolidation:
         errors.append(_error(run_dir, "invalid_phase_topology", "clean QA requires repair-skipped or consolidation artifact"))
     for index, qa_number in enumerate(qa_numbers, start=1):
@@ -687,6 +729,14 @@ def _validate_qa_repair_sequence(
                 and final_qa.get("qa_verdict") == "CHECKLIST_FAILED"
             ):
                 errors.append(_error(run_dir / "07-summary" / "manifest.json", "invalid_failed_terminal_topology", "consolidation regression requires pass, consolidation, then failed QA"))
+        elif final_qa.get("qa_verdict") == "CHECKLIST_FAILED":
+            errors.append(
+                _error(
+                    run_dir / "07-summary" / "manifest.json",
+                    "invalid_failed_terminal_topology",
+                    "failed final QA must terminate as QA_RETRY_EXHAUSTED or CONSOLIDATION_REGRESSION",
+                )
+            )
     if has_consolidation:
         consolidation = manifests[CONSOLIDATION_DIRECTORY]
         if consolidation.get("consolidation_attempts") != 1:

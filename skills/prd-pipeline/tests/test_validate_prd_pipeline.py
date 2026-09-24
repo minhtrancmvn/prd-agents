@@ -497,7 +497,7 @@ class RunValidationTests(unittest.TestCase):
             "artifact_dir": str(run_dir.resolve()),
             "completed_checks": ["fixture check"],
             "unresolved_items": [],
-            "next_agent": "prd-next-agent" if not directory.startswith("07-") else "STOP",
+            "next_agent": "prd-pipeline" if not directory.startswith("07-") else "STOP",
             "error_code": error_code,
             "error_details": "NONE" if error_code == "NONE" else "fixture failure",
             "retry_count": retry_count,
@@ -519,7 +519,7 @@ class RunValidationTests(unittest.TestCase):
                 f"ARTIFACT_DIR: {run_dir.resolve()}",
                 "COMPLETED_CHECKS: fixture check",
                 "UNRESOLVED_ITEMS: NONE",
-                f"NEXT_AGENT: {'prd-next-agent' if not directory.startswith('07-') else 'STOP'}",
+                f"NEXT_AGENT: {'prd-pipeline' if not directory.startswith('07-') else 'STOP'}",
                 f"ERROR_CODE: {error_code}",
                 f"ERROR_DETAILS: {'NONE' if error_code == 'NONE' else 'fixture failure'}",
             )
@@ -1256,11 +1256,29 @@ class RunValidationTests(unittest.TestCase):
         self.update_manifest("04-author", status="UNKNOWN")
         self.assert_error_code("unknown_status")
 
+    def test_manifest_schema_and_agent_names_are_canonical(self) -> None:
+        cases = (
+            ({"schema_version": "2.0"}, "invalid_schema_version"),
+            ({"agent": "evil-agent"}, "unknown_agent"),
+            ({"next_agent": "evil-agent"}, "unknown_next_agent"),
+        )
+        for index, (updates, code) in enumerate(cases):
+            with self.subTest(updates=updates):
+                self.make_successful_run()
+                self.update_manifest("01-plan", **updates)
+                self.assert_error_code(code)
+                self.run_dir = Path(self.temp_dir.name) / f"run-canonical-{index}"
+
     def test_unknown_complexity_uses_zero_retry_limit(self) -> None:
         self.make_successful_run()
         self.assertEqual(validator.validate_run(self.run_dir), [])
         self.update_manifest("00-load", retry_limit=1)
         self.assert_error_code("invalid_retry_limit")
+
+    def test_load_phase_requires_unknown_complexity_before_plan(self) -> None:
+        self.make_successful_run()
+        self.update_manifest("00-load", complexity="Simple", retry_limit=1)
+        self.assert_error_code("invalid_load_complexity")
 
     def test_simple_complexity_uses_one_retry_limit(self) -> None:
         self.make_successful_run(complexity="Simple")
@@ -1318,6 +1336,20 @@ class RunValidationTests(unittest.TestCase):
         (self.run_dir / "07-summary").rmdir()
         self.assert_error_code("missing_summary")
 
+    def test_missing_summary_does_not_suppress_topology_diagnostics(self) -> None:
+        self.make_successful_run()
+        self.update_manifest("02-context", status="BLOCKED", error_code="ROLES_FILE_NOT_FOUND")
+        for path in (self.run_dir / "06-repair-skipped").iterdir():
+            path.unlink()
+        (self.run_dir / "06-repair-skipped").rmdir()
+        for path in (self.run_dir / "07-summary").iterdir():
+            path.unlink()
+        (self.run_dir / "07-summary").rmdir()
+        codes = {error.code for error in validator.validate_run(self.run_dir)}
+        self.assertIn("missing_summary", codes)
+        self.assertIn("invalid_terminal_topology", codes)
+        self.assertIn("invalid_phase_topology", codes)
+
     def test_unresolved_template_token_is_rejected(self) -> None:
         self.make_successful_run()
         self.update_manifest("01-plan", error_details="TODO: fill target")
@@ -1349,6 +1381,24 @@ class RunValidationTests(unittest.TestCase):
         self.update_manifest("07-summary", status="FAILED", error_code="CONSOLIDATION_REGRESSION", qa_verdict="CHECKLIST_FAILED")
         self.assertEqual(validator.validate_run(self.run_dir), [])
         self.update_manifest("05-qa-attempt-2", status="SUCCESS", error_code="NONE", qa_verdict="CHECKLIST_PASSED")
+        self.assert_error_code("invalid_failed_terminal_topology")
+
+    def test_terminal_summary_status_is_pinned_to_terminal_values(self) -> None:
+        for status in ("SUCCESS_WITH_WARNINGS", "SKIPPED", "UNKNOWN"):
+            with self.subTest(status=status):
+                self.make_exhausted_run("Simple")
+                self.update_manifest("07-summary", status=status)
+                self.assert_error_code("invalid_terminal_summary_status")
+                self.run_dir = Path(self.temp_dir.name) / f"run-terminal-status-{status}"
+
+    def test_summary_qa_verdict_must_equal_final_qa_verdict(self) -> None:
+        self.make_exhausted_run("Simple")
+        self.update_manifest("07-summary", qa_verdict="CHECKLIST_PASSED")
+        self.assert_error_code("invalid_summary_qa_verdict")
+
+    def test_failed_final_qa_rejects_unrelated_terminal_error_code(self) -> None:
+        self.make_exhausted_run("Simple")
+        self.update_manifest("07-summary", error_code="AUTHOR_WRITE_FAILURE")
         self.assert_error_code("invalid_failed_terminal_topology")
 
 
