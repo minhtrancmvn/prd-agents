@@ -109,6 +109,56 @@ Start Claude Code from target workspace, then invoke canonical pipeline.
 
 For update or Figma-backed work, pass target path, relevant source context, and Figma URL in same `/prd-pipeline` request. Pipeline derives safe decisions from supplied context. It runs with `context: fork` and cannot prompt mid-run, so when it cannot derive a decision safely it stops with `BLOCKED` and returns the exact unresolved list. For unresolved roles, re-invoke `/prd-pipeline` with explicit approval for that exact list in the request.
 
+### Invocation examples
+
+Create notification requirements:
+
+```text
+/prd-pipeline Create notification requirements for notifying a Contractor when a job is assigned.
+
+Workspace root: /absolute/path/to/project
+Target path: /absolute/path/to/project/business-requirements/job-assigned-notification.md
+```
+
+Create email-template requirements:
+
+```text
+/prd-pipeline Create email-template requirements for password-reset confirmation.
+
+Workspace root: /absolute/path/to/project
+Target path: /absolute/path/to/project/business-requirements/password-reset-email.md
+```
+
+Update an existing document:
+
+```text
+/prd-pipeline Update this notification requirement with the new delivery rule.
+
+Workspace root: /absolute/path/to/project
+Target path: /absolute/path/to/project/business-requirements/job-assigned-notification.md
+Preserve content outside the requested scope.
+```
+
+Use Figma-backed requirements by including explicit Figma URLs or node links:
+
+```text
+/prd-pipeline Create a use-case PRD from this design:
+https://www.figma.com/design/<file-key>/<name>?node-id=<node-id>
+
+Workspace root: /absolute/path/to/project
+Target path: /absolute/path/to/project/business-requirements/example.md
+```
+
+Optional explicit inputs reduce blocked runs:
+
+```text
+Roles path: /absolute/path/to/project/roles-permissions.md
+PRD root: /absolute/path/to/project/business-requirements
+Mode: CREATE
+```
+
+Use `/prd-pipeline` for complete runs. Invoke a named specialist only when required inputs for that single stage already exist. Do not invoke `prd-orchestrator` for full runs; it is legacy routing and retry policy, not executable coordination.
+
 ## Run artifacts
 
 Pipeline reports absolute run artifact location in terminal response under `Artifacts:`. Pipeline stores artifacts outside repository source and does not source-control them. Never add generated PRDs, credentials, runtime state, or run artifacts to Git.
