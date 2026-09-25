@@ -192,7 +192,57 @@ Successful terminal response has `PRD_PIPELINE_COMPLETE`, absolute target path, 
 
 ### Retry budgets
 
-`Simple` plans allow one normal correction retry. `Complex` plans allow two. `UNKNOWN` complexity allows zero until planner resolves complexity. Pipeline increments normal retry count only after selected author returns non-empty correction and exact target path can be read. Optional consolidation is one separate cleanup attempt and does not consume normal retry budget.
+Retry budget counts successful author correction attempts after a failed checklist. Initial QA does not consume a retry.
+
+| Complexity | Correction retries | Maximum QA runs | Behavior |
+|---|---:|---:|---|
+| `UNKNOWN` | 0 | 0 | Planner must resolve complexity before author repair can start. |
+| `Simple` | 1 | 2 | Initial QA plus at most one corrected-document recheck. |
+| `Complex` | 2 | 3 | Initial QA plus at most two corrected-document rechecks. |
+
+`retry_count` increments only after all three conditions pass:
+
+1. Selected author returns non-empty correction output.
+2. Exact planned target remains present and readable.
+3. Pipeline persists complete `06-repair-attempt-N` artifact pair.
+
+These events do not consume normal retry budget:
+
+- initial checker run or later checker execution;
+- failed or empty author dispatch;
+- malformed, unsupported, or empty checker output;
+- Figma analysis or Figma access failure;
+- input, workspace, role, target, or artifact validation failures;
+- optional consolidation pass after `CHECKLIST_PASSED`.
+
+Simple timeline:
+
+```text
+QA1 CHECKLIST_FAILED
+  -> repair1 succeeds; retry_count becomes 1
+  -> QA2 CHECKLIST_PASSED: complete
+     or
+  -> QA2 CHECKLIST_FAILED: QA_RETRY_EXHAUSTED
+```
+
+Complex timeline:
+
+```text
+QA1 CHECKLIST_FAILED
+  -> repair1 succeeds; retry_count becomes 1
+  -> QA2 CHECKLIST_FAILED
+  -> repair2 succeeds; retry_count becomes 2
+  -> QA3 CHECKLIST_PASSED: complete
+     or
+  -> QA3 CHECKLIST_FAILED: QA_RETRY_EXHAUSTED
+```
+
+After `CHECKLIST_PASSED`, pipeline may perform one separate consolidation attempt. Consolidation does not change `retry_count` and cannot create another consolidation attempt. Pipeline reruns QA once after consolidation:
+
+- pass -> record `consolidation=passed`;
+- fail -> stop with `CONSOLIDATION_REGRESSION`; do not spend normal retry budget to repair that regression.
+
+`QA_RETRY_EXHAUSTED` means all allowed successful correction attempts were consumed and final QA still failed. Start a new pipeline run after resolving remaining findings.
 
 ### ClickUp verification
 
