@@ -36,6 +36,21 @@ A terminal `BLOCKED` or `FAILED` run before QA contains contiguous completed bas
 
 For skipped Figma, `03-figma/content.md` remains required. It records brief reason such as `No Figma links supplied in Plan Document.` A skipped status never means an absent file.
 
+## Session Version Decision payload
+
+The 12-field envelope and manifest schema remain unchanged. After the envelope, `01-plan/content.md` records the resolved **Session Version Decision** (or unresolved intent and exact caller question). Carry the same payload through AUTHOR, QA, every repair/consolidation, and `07-summary/content.md`:
+
+| Field | Evidence |
+|---|---|
+| `session_ref` | Stable conversation/session reference or first decision artifact reference carried by caller, not `run_id`. |
+| `target_path` | Canonical absolute path; decisions for different documents remain independent. |
+| `action` | `CREATE_INITIAL`, `ADD_NEW`, or `EDIT_LATEST`. |
+| `working_version` | Exact selected version number; never recalculated on repair/follow-up. |
+| `baseline_history` | Complete pre-session Version History table, or explicit absence. Preserve this baseline across runs, not each turn's table. |
+| `decision_source` | Clear user instruction/answer or prior artifact and conversation provenance establishing same session and target. |
+
+AUTHOR/QA/REPAIR content also records the actual table after each write and comparison with baseline. Summary preserves decision and artifact references for automatic reuse by the calling conversation; users need not assemble state. A new run directory alone does not invalidate the session decision. An unrelated session does not inherit it merely by finding a matching target. Block unresolved/conflicting intent before author dispatch; include the exact question in terminal remediation for caller to ask.
+
 ## `manifest.json` schema
 
 Every manifest includes all keys in this example. `artifact_dir` and non-empty `target_path` are absolute paths. `artifacts[].path` is relative to its phase directory and cannot escape it.

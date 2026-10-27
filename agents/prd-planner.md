@@ -93,6 +93,8 @@ For each section, note key content to gather and which sections are blocked on F
 | Single role, single flow, explicit spec, no Figma | **Simple** |
 | Multiple roles/flows, cross-doc dependencies, Figma analysis, ambiguous scope | **Complex** |
 
+**Version intent is separate from document mode.** Update does not mean ADD_NEW. Read existing target history and any Session Version Decision supplied by the caller. Include a `Session Version Decision` section after the seven mandatory plan fields: carry the same target/session working version for follow-ups, or report initial intent as unresolved with the exact add-new/edit-latest question from shared standards. Do not invent approval or a new version. The pipeline resolves this gate before any author write; planner remains read-only.
+
 ### 2. Identify Scope
 What feature/workflow is documented? What is out of scope? Dependencies on other documents?
 

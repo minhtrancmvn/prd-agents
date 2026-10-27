@@ -17,6 +17,7 @@ Validate completed requirement documents against project standards. You do not e
 - Absolute **Workspace root**
 - Optionally: **Figma analysis output** for comparison
 - Optionally: **External ClickUp verification evidence** keyed by URL
+- **Session Version Decision** and `baseline_history` for pipeline runs; standalone checks use supplied session evidence when available and report session-history verification as `NOT_CHECKED` when absent, never invent it.
 
 If document path, Workspace root, or Document Type format is unusable, return `INPUT_INVALID` first. Include attempted path or received value and remediation. Do not produce checklist verdict.
 
@@ -49,6 +50,7 @@ If Figma analysis was not provided but the document references Figma designs, ap
 **All types**:
 - Metadata section with `clickup-page` field present before title
 - Version History table with at least one entry (correct date format, meaningful description)
+- When Session Version Decision is supplied, compare actual table to `baseline_history`: exactly one `working_version` row, only the authorized initial addition or latest-row edit, no extra version from follow-ups/repair/consolidation, and unchanged pre-session history outside that selected row. Unexpected version/history changes produce `CHECKLIST_FAILED`, not an informational note.
 
 **Use Case** additionally:
 - Overview section opens with a **Business Goal:** line — a single sentence stating the measurable outcome or problem the feature solves

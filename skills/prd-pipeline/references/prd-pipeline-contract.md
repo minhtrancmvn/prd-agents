@@ -12,6 +12,13 @@ This document defines canonical inputs, phase handoffs, retry behavior, terminal
 | `prd_root` | No | Explicit PRD root. If omitted, pipeline uses workspace policy. |
 | `run_dir` | No | Absolute output directory for run artifacts. If omitted, pipeline creates an external temporary run directory. |
 | `clickup_verification` | No | External verification evidence. Without supplied evidence or authorized lookup, live ClickUp validity is `NOT_CHECKED`; syntax-only checks remain allowed. |
+| Session version context | On follow-ups | Caller automatically carries Session Version Decision and conversation/prior artifact references for the exact target and session. Not a state object users must construct. |
+
+## Session version gate
+
+Apply shared standards' one-working-version-per-document/session policy. Initial new documents use `CREATE_INITIAL`; clear new-version intent uses `ADD_NEW` once; clear latest-version intent uses `EDIT_LATEST`. Subsequent turns, retries, resume, and consolidation reuse the selected working version even with a new run_id. Resolve against actual target history before any author dispatch; persist baseline and decision per artifact format.
+
+If initial add-new/edit-latest intent is unclear, PLAN returns `BLOCKED` / `PLAN_INCOMPLETE`, unresolved item `Version intent unresolved`, and `Remediation: For <target_path>, add a new version or edit the latest version?` The caller must ask this question as the next user-facing step before re-invoking with the answer and prior context. Do not silently choose edit-latest from an unqualified update request. No author dispatch while unresolved. Historical rows remain unchanged except the selected row for EDIT_LATEST.
 
 ## Normalized handoff envelope
 
@@ -41,17 +48,17 @@ ERROR_DETAILS: <details-or-NONE>
 | `prd-planner` | Full request, supplementary context, workspace root, target-path policy, optional PRD root | Plan Document with document type, scope, roles, files, target path, section outline, complexity. |
 | `prd-context-role-analyzer` | Plan Document, confirmed target path, workspace root, optional roles path, complexity | Context Report with canonical roles, permissions, related PRDs, and risks. |
 | `prd-figma-reader` | Figma URLs/node IDs, Scope Summary verbatim, run context | Structured design analysis, or explicit sparse/ambiguous warning. |
-| `prd-author` | Plan Document, Context Report, optional Figma analysis, absolute target path, shared standards, approved role instructions | Use Case PRD write result and self-checks. |
-| `prd-noti-req-author` | Plan Document, Context Report, optional design summary, absolute target path, shared standards, approved role instructions | Notification requirements write result and self-checks. |
-| `prd-email-req-author` | Plan Document, Context Report, optional Figma analysis, absolute target path, shared standards, approved role instructions | Email template requirements write result and self-checks. |
-| `prd-consistency-checker` | Absolute target path, document type, workspace root, optional design analysis, optional ClickUp verification evidence | Mutually exclusive QA verdict and normalized findings. |
+| `prd-author` | Plan Document, Context Report, optional Figma analysis, absolute target path, shared standards, approved role instructions, Session Version Decision | Use Case PRD write result and self-checks. |
+| `prd-noti-req-author` | Plan Document, Context Report, optional design summary, absolute target path, shared standards, approved role instructions, Session Version Decision | Notification requirements write result and self-checks. |
+| `prd-email-req-author` | Plan Document, Context Report, optional Figma analysis, absolute target path, shared standards, approved role instructions, Session Version Decision | Email template requirements write result and self-checks. |
+| `prd-consistency-checker` | Absolute target path, document type, workspace root, optional design analysis, optional ClickUp verification evidence, Session Version Decision and baseline history | Mutually exclusive QA verdict and normalized findings. |
 
 ## Phase result gates
 
 | Phase | Gate | Success status | Blocking status | Next phase |
 |---|---|---|---|---|
 | `LOAD` | Request non-empty, workspace resolves, run directory exists | `SUCCESS` | `BLOCKED` with `INPUT_INVALID` or `WORKSPACE_NOT_FOUND` | `PLAN` |
-| `PLAN` | Seven plan fields populated and target path resolved | `SUCCESS` | `BLOCKED` with `PLAN_INCOMPLETE` | `CONTEXT` |
+| `PLAN` | Seven plan fields populated, target path resolved, Session Version Decision resolved | `SUCCESS` | `BLOCKED` with `PLAN_INCOMPLETE` | `CONTEXT` |
 | `CONTEXT` | Roles readable and resolution complete, or approved unresolved roles | `SUCCESS` | `BLOCKED` with `ROLES_FILE_NOT_FOUND` or `RISK_ITEMS_FOUND` | `FIGMA` or `AUTHOR` |
 | `FIGMA` | Every required source analyzed, or structured warning recorded | `SUCCESS` or `SUCCESS_WITH_WARNINGS`; no links uses `SKIPPED` | `FAILED` with `FIGMA_READ_FAILURE` | `AUTHOR` |
 | `AUTHOR` | Target exists, type/mode match, self-checks pass | `SUCCESS` | `FAILED` with typed author error | `QA` |

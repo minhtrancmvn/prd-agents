@@ -29,7 +29,7 @@ Format: `[Action] [Object] as [Role(s)]` — include all involved roles from the
 For three or more roles, use commas and "and": `[Action] [Object] as [Role1], [Role2], and [Role3]`.
 
 ### 3. Version History (MANDATORY)
-Per `prd-shared-authoring-standards.md`. **When updating an existing document, the default is to edit the existing version row in place — do NOT add a new version row unless the user explicitly asks for one.**
+Per `prd-shared-authoring-standards.md`, including its session-scoped version policy. Require a resolved **Session Version Decision** before any write; if absent or ambiguous, return the add-new/edit-latest question to the caller without writing. Read existing history, apply `working_version` once, and reuse that row for follow-ups, repair, and consolidation. Preserve pre-session history and return the actual working row plus history comparison in self-checks. Never treat a repeated original new-version instruction as permission to bump again.
 
 ### 4. Overview
 First line must be a labelled business goal:

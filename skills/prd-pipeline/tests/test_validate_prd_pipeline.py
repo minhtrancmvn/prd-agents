@@ -140,6 +140,95 @@ sys.modules[spec.name] = validator
 spec.loader.exec_module(validator)
 
 
+class SessionVersionContractTests(unittest.TestCase):
+    def test_readme_matches_session_version_policy(self) -> None:
+        text = README_PATH.read_text(encoding="utf-8")
+        for rule in (
+            "one working version per document per thread/session",
+            "add a new version or edit the latest version?",
+            "Follow-ups, resume, QA repairs, and consolidation reuse that version",
+            "Preserve pre-session history",
+        ):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, text)
+        self.assertNotIn("Updates edit existing row unless user explicitly requests", text)
+
+    def test_shared_policy_keeps_one_working_version_per_document_per_session(self) -> None:
+        text = SHARED_STANDARDS_PATH.read_text(encoding="utf-8")
+        for rule in (
+            "one working version per document per conversation/thread/session",
+            "ADD_NEW", "EDIT_LATEST", "CREATE_INITIAL",
+            "working_version", "baseline_history", "decision_source",
+            "fresh run_id does not start a new session",
+            "Preserve all pre-session history rows verbatim",
+        ):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, text)
+
+    def test_unclear_intent_returns_question_before_authoring(self) -> None:
+        text = SKILL_PATH.read_text(encoding="utf-8")
+        question = "For <target_path>, add a new version or edit the latest version?"
+        self.assertIn(question, text)
+        self.assertIn("caller must ask this question before re-invoking", text)
+        plan = text.split("### Phase 1: PLAN", 1)[1].split("### Phase 2:", 1)[0]
+        self.assertIn("PLAN_INCOMPLETE", plan)
+        self.assertIn("Version intent unresolved", plan)
+        self.assertIn("Do not dispatch context or author", plan)
+
+    def test_pipeline_reuses_session_decision_across_runs_and_all_writes(self) -> None:
+        text = SKILL_PATH.read_text(encoding="utf-8")
+        self.assertIn("fresh run_id does not start a new session", text)
+        self.assertIn("conversation history and prior run artifacts", text)
+        self.assertIn("Do not require users to construct session state", text)
+        for phase, next_phase in ((4, 5), (5, 6), (6, 7)):
+            with self.subTest(phase=phase):
+                section = text.split(f"### Phase {phase}:", 1)[1].split(f"### Phase {next_phase}:", 1)[0]
+                self.assertIn("Session Version Decision", section)
+        self.assertIn("baseline_history", text)
+
+    def test_artifact_contract_persists_session_decision_without_changing_envelope(self) -> None:
+        text = ARTIFACT_FORMAT_PATH.read_text(encoding="utf-8")
+        for field in ("Session Version Decision", "session_ref", "target_path", "action",
+                      "working_version", "baseline_history", "decision_source"):
+            with self.subTest(field=field):
+                self.assertIn(field, text)
+        self.assertIn("12-field envelope and manifest schema remain unchanged", text)
+        self.assertIn("07-summary/content.md", text)
+
+    def test_all_authors_require_decision_and_reuse_it_for_repairs(self) -> None:
+        for name in ("prd-author", "prd-noti-req-author", "prd-email-req-author"):
+            with self.subTest(agent=name):
+                text = (REPOSITORY_ROOT / "agents" / f"{name}.md").read_text(encoding="utf-8")
+                for rule in ("Session Version Decision", "before any write", "working_version",
+                             "repair", "consolidation", "pre-session history"):
+                    self.assertIn(rule, text)
+                self.assertNotIn("do NOT add a new version row unless the user explicitly asks for one", text)
+
+    def test_planner_separates_document_mode_from_version_intent(self) -> None:
+        text = (REPOSITORY_ROOT / "agents" / "prd-planner.md").read_text(encoding="utf-8")
+        self.assertIn("Update does not mean ADD_NEW", text)
+        self.assertIn("Session Version Decision", text)
+        self.assertIn("unresolved", text)
+
+    def test_checker_compares_actual_history_to_session_baseline(self) -> None:
+        text = CHECKER_PATH.read_text(encoding="utf-8")
+        self.assertIn("Session Version Decision", text)
+        self.assertIn("baseline_history", text)
+        self.assertIn("working_version", text)
+        self.assertIn("CHECKLIST_FAILED", text)
+        self.assertIn("pre-session history", text)
+
+    def test_specialist_contract_carries_decision_and_clarification_question(self) -> None:
+        text = CONTRACT_PATH.read_text(encoding="utf-8")
+        self.assertIn("Session Version Decision", text)
+        self.assertIn("Version intent unresolved", text)
+        self.assertIn("caller must ask", text)
+        for agent in ("prd-author", "prd-noti-req-author", "prd-email-req-author", "prd-consistency-checker"):
+            row = next(line for line in text.splitlines() if line.startswith(f"| `{agent}` |"))
+            with self.subTest(agent=agent):
+                self.assertIn("Session Version Decision", row)
+
+
 class ReadmeContractTests(unittest.TestCase):
     def test_readme_documents_canonical_pipeline_contract(self) -> None:
         readme_text = README_PATH.read_text(encoding="utf-8")

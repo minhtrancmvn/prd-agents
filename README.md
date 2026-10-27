@@ -264,7 +264,9 @@ Target and search paths resolve in this order: explicit PRD root, `business-requ
 
 ### Metadata, references, and updates
 
-Every generated document starts with `clickup-page` YAML metadata. Agents leave it empty when no ClickUp page exists. Cross-document references use source `clickup-page` URL when present, otherwise exact filename. Every document has `Version`, `Date`, and `Changes` table. Updates edit existing row unless user explicitly requests new version row.
+Every generated document starts with `clickup-page` YAML metadata. Agents leave it empty when no ClickUp page exists. Cross-document references use source `clickup-page` URL when present, otherwise exact filename. Every document has `Version`, `Date`, and `Changes` table.
+
+Keep one working version per document per thread/session. A clear new-version request adds one row once; an edit-latest request edits the selected row. Follow-ups, resume, QA repairs, and consolidation reuse that version even across new pipeline run IDs. Preserve pre-session history. If initial intent for an existing document is unclear, ask before authoring: “For <target_path>, add a new version or edit the latest version?” Pipeline returns this question to the calling conversation when running in a fork; the caller asks it and resumes with the answer. Session Version Decision and baseline history travel in phase content artifacts, not new manifest fields.
 
 ### Functional design boundary
 

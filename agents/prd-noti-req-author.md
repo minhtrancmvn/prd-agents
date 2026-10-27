@@ -25,7 +25,7 @@ Per `prd-shared-authoring-standards.md`.
 Format: `[Notification Name] Notification` (e.g., `Job Assigned Notification`)
 
 ### 3. Version History (MANDATORY)
-Per `prd-shared-authoring-standards.md`. **When updating an existing document, the default is to edit the existing version row in place — do NOT add a new version row unless the user explicitly asks for one.**
+Per `prd-shared-authoring-standards.md`, including its session-scoped version policy. Require a resolved **Session Version Decision** before any write; if absent or ambiguous, return the add-new/edit-latest question to the caller without writing. Read existing history, apply `working_version` once, and reuse that row for follow-ups, repair, and consolidation. Preserve pre-session history and return the actual working row plus history comparison in self-checks. Never treat a repeated original new-version instruction as permission to bump again.
 
 ### 4. Overview
 Notification purpose, business context, trigger event, high-level content summary. No links to related documents.

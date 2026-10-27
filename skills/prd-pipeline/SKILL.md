@@ -119,6 +119,14 @@ Artifacts: <absolute run artifact directory>
 Unresolved: <semicolon-separated findings or NONE>
 ```
 
+### Session Version Decision
+
+Versioning is scoped to one document per conversation/thread/session, not one pipeline run. A fresh run_id does not start a new session. At the start, the calling conversation resolves clear version intent or reuses its decision from conversation history and prior run artifacts for the exact target and session. Pass that context into the fork automatically on follow-ups. Do not require users to construct session state or manually copy artifacts for routine edits.
+
+When initial intent for an existing document is unclear, the caller asks before authoring: **For <target_path>, add a new version or edit the latest version?** If the target is only resolved by PLAN, this fork returns `BLOCKED` with `PLAN_INCOMPLETE`, unresolved item `Version intent unresolved`, and the exact question in `Remediation`; the caller must ask this question before re-invoking with the user's answer and prior artifact reference. Surface the question as the next user-facing step, not only a buried error. Do not choose edit-latest merely because the request says "update". No question is needed for clear intent, new documents, or an established session working version.
+
+Follow the session policy in shared standards. Before first write, persist a Session Version Decision with `session_ref`, canonical `target_path`, `action` (`CREATE_INITIAL`, `ADD_NEW`, or `EDIT_LATEST`), `working_version`, complete `baseline_history`, and `decision_source`. Use an existing conversation/session identifier when available; otherwise retain a stable reference to the first decision artifact carried by the caller. This is bookkeeping, not a new user-supplied identifier. Validate target/session provenance before reuse; do not adopt an old session's decision just because the target matches. A conflicting or unrecoverable decision blocks for caller clarification. Only consolidate duplicate rows proven created in this session; never rewrite earlier history.
+
 ### Phase Artifact Procedure
 
 For each phase, before dispatch write phase input and intent into its `content.md` after an initial normalized envelope. After dispatch, append raw worker output without alteration, normalize fields into `manifest.json`, and update envelope to match manifest. Record all output-backed checks, unresolved items, error code, next agent, retry fields, and artifact entries. Agent errors, blank output, missing required fields, invalid phase result, or missing phase artifact stop current path and produce terminal failure.
@@ -147,7 +155,7 @@ For each phase, before dispatch write phase input and intent into its `content.m
 
 **Actions:**
 
-1. Persist full user request, supplementary context, absolute workspace root, target-path policy, optional PRD root, and LOAD artifact location in `01-plan` before dispatch.
+1. Persist full user request, supplementary context, absolute workspace root, target-path policy, optional PRD root, LOAD artifact location, and caller-provided conversation/session version evidence in `01-plan` before dispatch. Forward this evidence to the planner.
 2. Dispatch `prd-planner` with this exact instruction:
 
 ```text
@@ -160,10 +168,11 @@ fields and include Figma Links to Analyse only when the request contains links.
 4. Normalize planner `New` mode to contract `CREATE`; normalize `Update` to `UPDATE`. Require document type exactly `Use Case`, `Notification`, or `Email Template`.
 5. Resolve planner target path deterministically. For a relative target, resolve against the workspace PRD root in the order defined by `prd-shared-authoring-standards.md` (`PRD Root Directory`): explicit PRD root, otherwise `business-requirements/`, otherwise `prd/`, otherwise the workspace root following existing folder conventions. Delegate to those shared standards instead of hardcoding a single default directory. Normalize with path resolution, then require the resulting path absolute and policy-compliant. For UPDATE, retain supplied existing path after normalization; never substitute a new path later.
 6. Set retry limit to `1` for Simple or `2` for Complex. Capture Figma links only from explicit request/plan links; do not invent links.
+7. Read the exact target's history (or confirm absence for CREATE). Resolve and persist Session Version Decision from clear request intent or matching prior session evidence. Check that current history still matches the baseline plus the selected working row; never infer that an unexpected row belongs to this session. If add-new/edit-latest is unclear or session evidence conflicts, block PLAN with `PLAN_INCOMPLETE`, `Version intent unresolved`, and the exact question/remediation from Shared Run Protocol. Do not dispatch context or author. An UPDATE target that cannot be read blocks PLAN; do not invent its baseline.
 
 **Artifact:** `01-plan/manifest.json` and `01-plan/content.md` containing full raw Plan Document after normalized `PLAN` envelope.
 
-**Gate:** All seven fields present, target path absolute and policy-compliant, exact type/mode/complexity normalize, and artifact pair exists.
+**Gate:** All seven fields present, target path absolute and policy-compliant, exact type/mode/complexity normalize, Session Version Decision resolved against actual history, and artifact pair exists.
 
 **Failure:** `BLOCKED` with `PLAN_INCOMPLETE`. Include missing/invalid fields in unresolved items and create terminal summary. Worker error or empty output is terminal failure; do not dispatch context.
 
@@ -226,9 +235,9 @@ Notification -> prd-noti-req-author
 Email Template -> prd-email-req-author
 ```
 
-2. Persist full Plan Document, Context Report, Figma analysis or explicit Figma skip artifact, absolute target path, absolute shared standards path, workspace root, and explicit unresolved-role approval when present.
-3. Dispatch selected author with all persisted inputs. Tell author to write only target path, follow shared standards, preserve Update content outside requested scope, and return self-check claims. Do not allow worker-selected substitute path.
-4. Require non-empty author output. Verify exact target path exists with `Read` after worker returns. Persist raw worker output and record output-backed self-check claims in author manifest.
+2. Persist full Plan Document, Context Report, Figma analysis or explicit Figma skip artifact, absolute target path, absolute shared standards path, workspace root, explicit unresolved-role approval when present, and Session Version Decision including baseline history. Re-read current target before dispatch; if history conflicts with the decision, stop without writing.
+3. Dispatch selected author with all persisted inputs. Tell author to write only target path, follow shared standards, preserve Update content outside requested scope, and return self-check claims. Apply the selected working row only once; reused ADD_NEW is not another bump. Do not allow worker-selected substitute path.
+4. Require non-empty author output. Verify exact target path exists with `Read` after worker returns. Compare actual Version History with the Session Version Decision and `baseline_history`: one working row, no unauthorized added versions, unchanged historical rows except selected EDIT_LATEST row. A mismatch is `AUTHOR_WRITE_FAILURE`, not success. Persist raw worker output, actual table, and output-backed self-check claims in author manifest.
 5. For `UPDATE`, if target missing, do not substitute a new path. For `CREATE`, target must still be exactly planned absolute target path.
 
 **Artifact:** `04-author/manifest.json` and `04-author/content.md`, including selected author, exact target, full inputs, raw output, Read verification, and self-check claims.
@@ -245,7 +254,7 @@ Email Template -> prd-email-req-author
 
 1. Preflight checker inputs before dispatch: target path must be absolute and readable with `Read`; document type must be exact; workspace root must exist; Context Report role source state must be available. Preflight failure is terminal `INPUT_INVALID` or `DOCUMENT_NOT_FOUND`; do not call checker.
 2. Create `05-qa-attempt-N` artifacts before dispatch. Persist target path, document type, absolute workspace root, Figma analysis or skip, Context Report role evidence, `clickup_verification_status: NOT_CHECKED|VERIFIED`, exact external ClickUp verification evidence or `NONE`, retry state, and author artifact path. Without authorized evidence, require checker to perform URL syntax-only checks and report live ClickUp validity as `NOT_CHECKED`; never infer it.
-3. Dispatch `prd-consistency-checker` read-only. Require trimmed first line to equal exactly one documented status and full non-empty body:
+3. Dispatch `prd-consistency-checker` read-only with Session Version Decision and `baseline_history`; require comparison against actual history, not only author claims. Persist this evidence in QA content. Require trimmed first line to equal exactly one documented status and full non-empty body:
 
 ```text
 CHECKLIST_PASSED
@@ -284,11 +293,11 @@ If `CHECKLIST_FAILED` has exhausted normal budget, terminal `FAILED` with `QA_RE
 
 1. If QA is `CHECKLIST_PASSED`, no consolidation is requested, and no `06-repair-attempt-N` was produced earlier in the run, create canonical `06-repair-skipped/manifest.json` and `06-repair-skipped/content.md` with `STATUS: SKIPPED`, `phase: REPAIR`, `next_agent: prd-pipeline`, `retry_count` unchanged, and explicit reason. This pair is required before REPORT when the run reached a passing verdict without repair.
 2. Enter repair only after a QA result mapped exactly to `status: SUCCESS`, `qa_verdict: CHECKLIST_FAILED`, `error_code: CHECKLIST_FAILED`, `terminal: false`, and selected author `next_agent`, and only when `retry_count < retry_limit`.
-3. Create `06-repair-attempt-N` artifacts before dispatch. Give same selected author complete original author inputs plus full checker body, exact target path, current document content, and a correction-only instruction. Do not truncate or summarize checker findings.
-4. Require non-empty correction output. Verify exact target exists with `Read`. Record corrected self-check claims and full raw response.
+3. Create `06-repair-attempt-N` artifacts before dispatch. Give same selected author complete original author inputs plus full checker body, exact target path, current document content, unchanged Session Version Decision, and a correction-only instruction. Explicitly reuse `working_version`; original ADD_NEW intent has already been consumed. Do not truncate or summarize checker findings.
+4. Require non-empty correction output. Verify exact target exists with `Read` and compare actual history to Session Version Decision and `baseline_history` using AUTHOR's history check. Never accept another version row as repair. Record corrected self-check claims and full raw response.
 5. Increment `retry_count` only after author correction has returned and exact target verification succeeds. Never increment for a failed dispatch, a checker failure, or planned repair.
 6. Rerun Phase 5 with next QA attempt. If normal budget is exhausted after a failed checklist result, terminal `FAILED` with `QA_RETRY_EXHAUSTED`.
-7. Optional consolidation occurs only once after clean `CHECKLIST_PASSED`: create `06-consolidation-attempt-1`, set `consolidation_attempts: 1` without changing normal `retry_count`, run same author using consolidation recommendations, then create following QA recheck. If recheck regresses, terminal `FAILED` with `CONSOLIDATION_REGRESSION`; if it passes, record `consolidation=passed`. Consolidation may coexist with prior repair attempts or `06-repair-skipped`; it does not replace their canonical history.
+7. Optional consolidation occurs only once after clean `CHECKLIST_PASSED`: create `06-consolidation-attempt-1`, set `consolidation_attempts: 1` without changing normal `retry_count`, run same author using consolidation recommendations and unchanged Session Version Decision (no new row or bump), verify history as in AUTHOR, then create following QA recheck. If recheck regresses, terminal `FAILED` with `CONSOLIDATION_REGRESSION`; if it passes, record `consolidation=passed`. Consolidation may coexist with prior repair attempts or `06-repair-skipped`; it does not replace their canonical history.
 
 **Artifact:** `06-repair-skipped/manifest.json` and `06-repair-skipped/content.md` for clean QA without repair; `06-repair-attempt-N/manifest.json` and `06-repair-attempt-N/content.md` for correction; `06-consolidation-attempt-1/manifest.json` and `06-consolidation-attempt-1/content.md` for optional consolidation. Every pair records complete inputs/output, Read verification, and separate retry/consolidation counts.
 
@@ -302,7 +311,7 @@ If `CHECKLIST_FAILED` has exhausted normal budget, terminal `FAILED` with `QA_RE
 
 **Actions:**
 
-1. Finalize `07-summary` artifact pair before validation with terminal status, target, type, mode, full stage list, QA verdict, retry/consolidation counts, notes, and all prior artifact locations. Do not mutate summary manifest or content after a successful validation pass.
+1. Finalize `07-summary` artifact pair before validation with terminal status, target, type, mode, full stage list, QA verdict, retry/consolidation counts, notes, and all prior artifact locations. Include Session Version Decision, baseline, and final actual history comparison in summary content so the caller can reuse it on follow-ups even with a new run directory. For a pre-decision failure, record unresolved intent instead. Do not mutate summary manifest or content after a successful validation pass.
 2. Resolve validator. If source-local project installation is active, use validator relative to loaded skill first. Otherwise use user-level fallback:
 
 ```bash

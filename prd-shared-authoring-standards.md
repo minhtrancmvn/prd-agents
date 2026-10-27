@@ -60,14 +60,22 @@ Never omit. Always use today's date in YYYY-MM-DD format — never copy placehol
 
 Exactly three columns: `Version`, `Date`, `Changes`. No `Author` or other columns.
 
-**New document**: version 1.0, today's date, "Initial document creation".
+### Session-scoped version policy
 
-**Updating an existing document**:
-- Check whether a version table exists before adding one.
-- **Default**: update the existing version row in place — do not add a new row unless the user explicitly says to.
-- **New version (explicit only)**: add a row, increment minor (1.1 → 1.2) or major (1.1 → 2.0) for significant changes.
-- **No table exists**: create one at 1.0, then update in place unless instructed otherwise.
-- Each entry: one concise line summarising the change — no sub-items or detailed changelogs.
+Keep **one working version per document per conversation/thread/session**, for Use Case, Notification, and Email Template documents alike. A fresh run_id does not start a new session. Follow-up requests, resumed runs, QA repairs, and consolidation edit the same working row; they never independently increment it. Different target documents have independent decisions.
+
+Before the first write for each target, read its existing Version History and resolve a **Session Version Decision** from the user's request, conversation history, and prior run artifacts for this same target and session:
+
+- `CREATE_INITIAL`: new document, or an existing document with no version table. Create 1.0 once, with today's date and "Initial document creation". Later session edits stay at 1.0.
+- `ADD_NEW`: user clearly requests a new version. Select the requested version, or increment minor once (1.1 → 1.2); use a major increment only when requested, not inferred from scope size. Add that row once, then reuse it throughout the session.
+- `EDIT_LATEST`: user clearly requests edits to the latest version, or is continuing/correcting an already selected working version. Keep its version number and edit that row in place.
+- If an existing document's initial request leaves add-new versus edit-latest unclear, **ask before writing**: "For <target_path>, add a new version or edit the latest version?" An unqualified "update" identifies document mode, not version intent. Do not silently choose a bump or edit-latest. Non-interactive workers return the question to their caller without writing; the caller asks it and resumes with the answer.
+
+Record target path, `working_version`, action, `baseline_history` (the complete pre-session table or explicit absence), and `decision_source` (user instruction or prior artifact/history reference) before authoring. Reuse a decision only when its target and session provenance match. The calling conversation carries its prior decision/artifact references on routine follow-ups; users do not construct state. If prior context cannot be recovered or conflicts with current history, ask rather than infer ownership of rows. An old session's artifact is historical evidence, not authority to continue that session's version.
+
+Preserve all pre-session history rows verbatim except the selected latest row under `EDIT_LATEST`. Never delete, rewrite, or merge historical entries to make the table look session-scoped. Only consolidate duplicate rows proven to have been produced in the current session, into its selected working row. If a follow-up appears to request another bump after a working version was selected, explain that this session already uses that version and clarify whether the user intends a separate versioning session before writing; do not automatically create a second row.
+
+Use today's date for the working row when edited; leave untouched historical dates unchanged. Each working entry is one concise line summarising all session changes — no sub-items or per-turn changelogs. Before reporting success, compare the actual table to `baseline_history`: exactly one row for `working_version`, no extra session versions, no unexpected changes to pre-session history.
 
 ---
 
