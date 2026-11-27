@@ -557,6 +557,43 @@ class SpecialistAgentContractTests(unittest.TestCase):
         self.assertIn("figma-console-mcp MCP server", text)
         self.assertNotIn("configured as `figma-console`", text)
 
+    def test_figma_reader_supports_v2_toolsets_without_figma_call(self) -> None:
+        text = FIGMA_READER_PATH.read_text(encoding="utf-8")
+        frontmatter = text.split("---", 2)[1]
+        tools_line = next(line for line in frontmatter.splitlines() if line.startswith("tools:"))
+        allowed = {tool.strip() for tool in tools_line.removeprefix("tools:").split(",")}
+        # Exact allowlist: adding figma_call, figma_execute, or any write tool must fail.
+        self.assertEqual(
+            allowed,
+            {
+                f"mcp__figma-console-mcp__{name}"
+                for name in (
+                    "figma_get_file_data",
+                    "figma_get_component",
+                    "figma_get_component_for_development",
+                    "figma_get_styles",
+                    "figma_get_variables",
+                    "figma_capture_screenshot",
+                    "figma_get_design_system_kit",
+                    "figma_enable_toolsets",
+                )
+            },
+        )
+        self.assertIn("Never call `figma_call`", text)
+        self.assertIn("Never enable a toolset other than `inspect`", text)
+        self.assertIn("`inspect` toolset", text)
+        self.assertIn("FIGMA_TOOLSETS", text)
+        self.assertIn("inspect toolset unavailable", text)
+        self.assertIn(
+            "For `inspect toolset unavailable`, replace the `Action required:` line with: Add `inspect` to `FIGMA_TOOLSETS`",
+            text,
+        )
+
+    def test_readme_documents_figma_console_mcp_v2_toolset_requirement(self) -> None:
+        readme_text = README_PATH.read_text(encoding="utf-8")
+        self.assertIn("FIGMA_TOOLSETS", readme_text)
+        self.assertIn("`inspect` toolset", readme_text)
+
     def test_legacy_orchestrator_defers_to_authoritative_contract(self) -> None:
         text = ORCHESTRATOR_PATH.read_text(encoding="utf-8")
         self.assertIn("references/prd-pipeline-contract.md", text)

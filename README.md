@@ -55,6 +55,8 @@ Subagent files use Markdown with YAML frontmatter. Each definition declares expl
 - Target workspace containing exactly one discoverable `roles-permissions.md`, or explicit roles-file path in request.
 - Product context sufficient to identify scope, roles, source documents, and target requirements path.
 - Optional: configured `figma-console-mcp` MCP server and Figma access when request contains Figma URLs. The server name must match the `mcp__figma-console-mcp__` tool allowlist prefix in `agents/prd-figma-reader.md`. See [Connect Claude Code to tools via MCP](https://code.claude.com/docs/en/mcp).
+  - figma-console-mcp v2 loads tools in toolsets and lists only core tools by default. The reader's primary tools (`figma_get_file_data`, `figma_get_component`, `figma_get_component_for_development`, `figma_get_styles`, `figma_get_design_system_kit`) are in the `inspect` toolset. Set `FIGMA_TOOLSETS` to `inspect` (or a list that includes it, or `all`) in the server's `env`, then restart the client. The reader tries `figma_enable_toolsets` once when the tools are missing. If they are still missing, it fails with `FIGMA_READ_FAILURE` and reason `inspect toolset unavailable`.
+  - After upgrading to v2, re-import the Figma Desktop Bridge plugin. v2 changed the plugin's `code.js`. `figma_capture_screenshot` needs the plugin, and `figma_get_variables` uses it when connected.
 
 No package manager, application runtime, or build system is required.
 
@@ -178,7 +180,7 @@ Successful terminal response has `PRD_PIPELINE_COMPLETE`, absolute target path, 
 | `ROLES_FILE_NOT_FOUND` | Roles source missing or unreadable | Add or specify readable `roles-permissions.md`, then rerun pipeline |
 | `RISK_ITEMS_FOUND` | Requested roles do not resolve without approval | Correct roles or explicitly approve exact unresolved-role list |
 | `PLAN_INCOMPLETE` | Planner result lacks required fields or safe target resolution | Supply missing scope, roles, documents, target, outline, or complexity facts |
-| `FIGMA_READ_FAILURE` | Required Figma source failed, was inaccessible, or returned malformed output or no output at all (an empty response, not a sparse-but-valid analysis) | Verify MCP availability and Figma access, then rerun |
+| `FIGMA_READ_FAILURE` | Required Figma source failed, was inaccessible, or returned malformed output or no output at all (an empty response, not a sparse-but-valid analysis) | Verify MCP availability, the `inspect` toolset, and Figma access, then rerun |
 | `AUTHOR_INPUT_INVALID` | Selected author received invalid type, target, mode, or required handoff input | Correct planned input or target policy and rerun |
 | `AUTHOR_WRITE_FAILURE` | Author did not produce planned exact target | Correct target inputs or workspace write access, then rerun |
 | `DOCUMENT_NOT_FOUND` | Planned target cannot be read before QA or is absent after authoring | Restore or create exact planned target, then rerun |
@@ -270,11 +272,11 @@ Keep one working version per document per thread/session. A clear new-version re
 
 ### Functional design boundary
 
-`prd-figma-reader` is read-only. It records functional labels, element types, states, statuses, behavior, validation hints, visibility, navigation, literal content, source URL, node ID, screens analysed, and unresolved ambiguities. It does not report appearance or call Figma write, comment, annotation, FigJam edit, or Slides edit tools. Agent-authored diagrams use ASCII in plain `text` code blocks unless user asks for Mermaid.
+`prd-figma-reader` is read-only. It records functional labels, element types, states, statuses, behavior, validation hints, visibility, navigation, literal content, source URL, node ID, screens analysed, and unresolved ambiguities. It does not report appearance or call Figma write, comment, annotation, FigJam edit, or Slides edit tools. It never calls `figma_call`, which v2 marks destructive because it runs other tools by name. Agent-authored diagrams use ASCII in plain `text` code blocks unless user asks for Mermaid.
 
 ## Development and validation
 
-Keep agent names unique, preserve YAML frontmatter, and keep `prd-pipeline` contract aligned with specialist prompts. `prd-orchestrator` must name all worker agents and direct full runs to pipeline. Read-only agents must not gain write tools without concrete need. Author agents need `Write` and `Edit` for target requirement files.
+Keep agent names unique, preserve YAML frontmatter, and keep `prd-pipeline` contract aligned with specialist prompts. `prd-orchestrator` must name all worker agents and direct full runs to pipeline. Read-only agents must not gain write tools without concrete need. When a test guards a read-only agent's `tools:` allowlist, pin the exact set so any added tool fails the suite. Author agents need `Write` and `Edit` for target requirement files.
 
 Run commands from repository root.
 
