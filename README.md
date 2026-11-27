@@ -335,4 +335,4 @@ PY
 
 ## Privacy and repository scope
 
-Root `.gitignore` denies all files by default and includes only tracked agent sources, `skills/prd-pipeline/`, shared standards, README, and the tracked design and plan docs (`docs/superpowers/specs/2026-09-24-prd-pipeline-design.md` and `docs/superpowers/plans/2026-09-24-prd-pipeline.md`). Keep local Claude Code settings, tokens, MCP credentials, histories, caches, sessions, generated requirements, and run artifacts out of version control.
+Root `.gitignore` denies all files by default and includes only tracked agent sources, `skills/prd-pipeline/`, shared standards, and README. Keep local Claude Code settings, tokens, MCP credentials, histories, caches, sessions, generated requirements, and run artifacts out of version control.

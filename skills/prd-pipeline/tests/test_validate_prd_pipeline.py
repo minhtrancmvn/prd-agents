@@ -273,10 +273,12 @@ class ReadmeContractTests(unittest.TestCase):
         readme_text = README_PATH.read_text(encoding="utf-8")
         self.assertIn("Python 3.10 or newer", readme_text)
 
-    def test_readme_gitignore_inventory_lists_tracked_design_and_plan_docs(self) -> None:
+    def test_readme_and_gitignore_do_not_track_removed_superpowers_docs(self) -> None:
         readme_text = README_PATH.read_text(encoding="utf-8")
-        self.assertIn("docs/superpowers/specs/2026-09-24-prd-pipeline-design.md", readme_text)
-        self.assertIn("docs/superpowers/plans/2026-09-24-prd-pipeline.md", readme_text)
+        gitignore_text = (REPOSITORY_ROOT / ".gitignore").read_text(encoding="utf-8")
+        self.assertNotIn("docs/superpowers", readme_text)
+        self.assertNotIn("docs/superpowers", gitignore_text)
+        self.assertNotIn("!/docs/", gitignore_text)
 
     def test_readme_project_install_commands_are_workspace_safe(self) -> None:
         readme_text = README_PATH.read_text(encoding="utf-8")
