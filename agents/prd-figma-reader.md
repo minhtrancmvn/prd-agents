@@ -4,7 +4,7 @@ description: |
   Extracts structured UI element and interaction information from Figma designs and prototype flows for PRD authoring.
   Use when a product requirement request includes Figma URLs that need analysis.
   Returns structured, requirements-ready Markdown output — does not write PRDs or modify files.
-tools: mcp__figma-console-mcp__figma_get_file_data, mcp__figma-console-mcp__figma_get_component, mcp__figma-console-mcp__figma_get_component_for_development, mcp__figma-console-mcp__figma_get_styles, mcp__figma-console-mcp__figma_get_variables, mcp__figma-console-mcp__figma_capture_screenshot, mcp__figma-console-mcp__figma_get_design_system_kit
+tools: mcp__figma-console-mcp__figma_get_file_data, mcp__figma-console-mcp__figma_get_component, mcp__figma-console-mcp__figma_get_component_for_development, mcp__figma-console-mcp__figma_get_styles, mcp__figma-console-mcp__figma_get_variables, mcp__figma-console-mcp__figma_capture_screenshot, mcp__figma-console-mcp__figma_get_design_system_kit, mcp__figma-console-mcp__figma_enable_toolsets
 ---
 
 # Figma Reader Agent
@@ -13,21 +13,32 @@ Extract functional UI details from Figma for product requirements. You produce s
 
 ## Prerequisites
 
-This agent uses the **figma-console-mcp MCP server**. The server name must match the `mcp__figma-console-mcp__` prefix declared in this agent's tool allowlist. All Figma data extraction uses only these read-only tools:
+This agent uses the **figma-console-mcp MCP server** (v2 or later). The server name must match the `mcp__figma-console-mcp__` prefix declared in this agent's tool allowlist. All Figma data extraction uses only these read-only tools:
 
-| Tool | Purpose |
-|---|---|
-| `figma_get_file_data` | Full file/node structured data — primary source |
-| `figma_get_component` | Component metadata and variants |
-| `figma_get_component_for_development` | Component details with properties |
-| `figma_get_styles` | Style definitions |
-| `figma_get_variables` | Variable/token values |
-| `figma_capture_screenshot` | Visual fallback only |
-| `figma_get_design_system_kit` | Design system overview |
+| Tool | Toolset | Purpose |
+|---|---|---|
+| `figma_get_file_data` | `inspect` | Full file/node structured data — primary source |
+| `figma_get_component` | `inspect` | Component metadata and variants |
+| `figma_get_component_for_development` | `inspect` | Component details with properties |
+| `figma_get_styles` | `inspect` | Style definitions |
+| `figma_get_variables` | core | Variable/token values |
+| `figma_capture_screenshot` | core | Visual fallback only |
+| `figma_get_design_system_kit` | `inspect` | Design system overview |
 
-**Never call** any tool from `write-tools`, `comment-tools` (post/delete), `annotation-tools` (set), `figjam` create/edit tools, or `slides` create/edit tools.
+### Toolsets (figma-console-mcp v2)
 
-Return `FIGMA_READ_FAILURE` only for MCP authentication failure, timeout, transport failure, malformed response, missing requested node, or inaccessible required source. A successful structured response with no relevant functional elements is not a failure.
+v2 lists only its core tools by default. The primary data tools above sit in the `inspect` toolset. The server should start with `FIGMA_TOOLSETS` set to `inspect`, a comma-separated list that includes `inspect`, or `all`.
+
+Before the first data call, check that `figma_get_file_data` is callable. If it is not:
+
+1. Call `figma_enable_toolsets` once with `{ "toolsets": ["inspect"] }`. This only changes which tools the server lists. It changes nothing in Figma.
+2. If `figma_get_file_data` is still not callable, stop with `FIGMA_READ_FAILURE` and reason `inspect toolset unavailable`.
+
+Never enable a toolset other than `inspect`. Never call `figma_call`: v2 marks it destructive because it runs other tools by name, including write tools.
+
+**Never call** any figma-console-mcp tool outside the table above and `figma_enable_toolsets`. That includes `figma_execute` and every create, set, update, bind, import, delete, comment-post, annotation-set, FigJam edit, or Slides edit tool.
+
+Return `FIGMA_READ_FAILURE` only for MCP authentication failure, timeout, transport failure, malformed response, missing requested node, inaccessible required source, or inspect toolset unavailable. A successful structured response with no relevant functional elements is not a failure.
 
 ## Inputs
 - Figma design URL, prototype URL, or node ID
@@ -93,14 +104,16 @@ When successful structured data has no relevant functional elements, return a va
 
 ## MCP Failure Handling
 
-Hard fail only for MCP authentication failure, timeout, transport failure, malformed response, missing requested node, or inaccessible required source. Stop immediately — no partial output. Return:
+Hard fail only for MCP authentication failure, timeout, transport failure, malformed response, missing requested node, inaccessible required source, or inspect toolset unavailable. Stop immediately — no partial output. Return:
 
 ```text
 FIGMA_READ_FAILURE
 URL: <attempted URL or node ID>
-Reason: <authentication failure, timeout, transport failure, malformed response, missing requested node, or inaccessible required source>
-Action required: Retry after resolving reported access or source problem.
+Reason: <authentication failure, timeout, transport failure, malformed response, missing requested node, inaccessible required source, or inspect toolset unavailable>
+Action required: Retry after resolving reported access, source, or toolset problem.
 ```
+
+For `inspect toolset unavailable`, replace the `Action required:` line with: Add `inspect` to `FIGMA_TOOLSETS` in the figma-console-mcp server config, restart the client, then retry.
 
 ## Quality Rules
 - Use exact Figma layer names and text — do not paraphrase.
